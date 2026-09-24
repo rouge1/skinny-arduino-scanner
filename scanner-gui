@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Launch the ESP32 scanner GUI. Extra args go to the app (see --help).
+cd "$(dirname "$(readlink -f "$0")")"
+exec .venv/bin/python -m esp32scan.gui "$@"

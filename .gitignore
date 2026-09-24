@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Capture logs: contain MAC addresses / SSIDs of nearby devices
+data/
+*.csv
+
+# Arduino build output
+build/
+*.elf
+*.bin
+*.map
+
+# Local tooling / OS
+.claude/settings.local.json
+.DS_Store
+._*
