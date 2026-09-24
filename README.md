@@ -186,15 +186,17 @@ out, the LED stops blipping.
    to capture, which is how you redo one. **Start capture** / **Stop
    capture** and **Skip stop** do the same as the button.
 
-**Clicking the map** anywhere near a captured stop opens a **Devices** window
-listing every WiFi network and Bluetooth device heard there: average and best
-signal, how many of the stop's scans heard it, maker, channel/security (WiFi),
-address type, services and decoded info (Bluetooth). The **WiFi** /
-**Bluetooth** chips (with their counts) and the search box narrow the list. The window stays open and
-follows your clicks.
+**Clicking the map** anywhere near a captured stop fills the **Devices at
+<stop>** panel under the map with every WiFi network and Bluetooth device
+heard there: average and best signal, how many of the stop's scans heard it,
+maker, channel/security (WiFi), address type, services and decoded info
+(Bluetooth). The **WiFi** / **Bluetooth** chips (with their counts) and the
+search box narrow the list. Drag the divider to give the map or the list more
+room.
 
 To work out **what is in a particular room**:
-- **Min signal** hides anything weaker than the threshold at this stop.
+- The **signal slider** ("Any signal", or "≥ −70 dBm" etc.) hides anything
+  weaker than the threshold at this stop.
   Roughly, −60 dBm or better is usually the same room and −80 or worse is far
   away, but transmit power varies a lot (a phone vs. a beacon vs. an AP).
 - **Strongest here only** keeps only devices whose strongest reading over the
@@ -205,9 +207,12 @@ To work out **what is in a particular room**:
   in-room devices. It's room-level at best: bodies, walls and orientation
   shift RSSI by 5–10 dB, and phones' RPA addresses rotate about every 15 min.
 
-The number beside each stop on the map is the current layer's value there: a
-signal in dBm, or for the "heard" layers the **average count per scan**.
-That's lower than the total in the Devices window, because not every device
+The number beside each stop on the map is the current layer's value there,
+with its unit: a signal in **dBm**, or for the "heard" layers the **average
+count per scan** (**APs** = WiFi access points, **BT** = Bluetooth devices).
+Clicking a stop rings it on the map and highlights the same stop in the list
+on the left.
+That's lower than the total in the Devices panel, because not every device
 is caught in every scan.
 
 The first capture starts a new survey. Earlier surveys can be picked from the

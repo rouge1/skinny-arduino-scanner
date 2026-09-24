@@ -9,15 +9,24 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-                               QSlider, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
+                               QSlider, QSplitter, QStyle, QStyledItemDelegate, QVBoxLayout,
+                               QWidget)
 
 from .. import PROJECT_ROOT
 from .. import survey as sv
 from . import theme as T
-from .stop_devices import StopDevicesWindow
+from .stop_devices import StopDevicesPanel
 
 STATE_ROLE = Qt.UserRole        # stop list: "done" / "skipped" / "open" / "next" / "capturing"
 DETAIL_ROLE = Qt.UserRole + 1   # stop list: right-hand text
+INSPECTED_ROLE = Qt.UserRole + 2  # stop list: the stop whose devices are listed
+
+# What a layer's number counts, short (map labels) and long (colour scale).
+UNITS = {"wifi_count": ("APs", "access points"), "ble_count": ("BT", "BT devices")}
+
+
+def layer_units(layer):
+    return UNITS.get(layer, ("dBm", "dBm"))
 
 
 def ramp_at(stops, t):
@@ -165,9 +174,11 @@ class FloorPlan(QWidget):
         nw = p.fontMetrics().horizontalAdvance(name)
         h = p.fontMetrics().height() + 4
         vtext = "" if value is None else f"{value:.0f}".replace("-", "−")
+        utext = f" {self.unit}" if vtext and self.unit else ""
+        uw = p.fontMetrics().horizontalAdvance(utext) if utext else 0
         p.setFont(value_font)
         vw = p.fontMetrics().horizontalAdvance(vtext) + 6 if vtext else 0
-        w = nw + vw + 12
+        w = nw + vw + uw + 12
         box = QRectF(c.x() - w / 2, c.y() + r + 4, w, h)
         bg = QColor(T.GROUND)
         bg.setAlpha(215)
@@ -180,7 +191,10 @@ class FloorPlan(QWidget):
         if vtext:
             p.setFont(value_font)
             p.setPen(QColor(T.INK))
-            p.drawText(box.adjusted(0, 0, -6, 0), Qt.AlignVCenter | Qt.AlignRight, vtext)
+            p.drawText(box.adjusted(0, 0, -6 - uw, 0), Qt.AlignVCenter | Qt.AlignRight, vtext)
+            p.setFont(name_font)
+            p.setPen(QColor(T.MUTED))
+            p.drawText(box.adjusted(0, 0, -6, 0), Qt.AlignVCenter | Qt.AlignRight, utext)
 
     def _stop_at(self, pos):
         s, ox, oy = self._geometry()
@@ -258,12 +272,22 @@ class StopDelegate(QStyledItemDelegate):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(option.rect)
-        if selected or hover:
+        inspected = bool(index.data(INSPECTED_ROLE))
+        if inspected:
+            tint = QColor(T.ACCENT)
+            tint.setAlphaF(0.14)
+            p.fillRect(rect, tint)
+            p.fillRect(QRectF(rect.x(), rect.y() + 4, 3, rect.height() - 8), QColor(T.ACCENT))
+        elif selected or hover:
             p.fillRect(rect, QColor(T.RAISED if selected else T.PANEL))
         c = QPointF(rect.x() + 20, rect.center().y())
+        if inspected:
+            p.setPen(QPen(QColor(T.ACCENT), 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(c, 13.5, 13.5)
         paint_badge(p, c, 10, index.row() + 1, state, T.ui_font(9, QFont.Weight.DemiBold))
-        p.setFont(T.ui_font(10.5, QFont.Weight.Medium if state in ("next", "capturing")
-                            else QFont.Weight.Normal))
+        p.setFont(T.ui_font(10.5, QFont.Weight.Medium if inspected or state in
+                            ("next", "capturing") else QFont.Weight.Normal))
         p.setPen(QColor(T.FAINT if state == "skipped" else T.INK))
         text_rect = rect.adjusted(40, 0, -10, 0)
         p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole))
@@ -294,7 +318,7 @@ class SurveyTab(QWidget):
         self.plan.setToolTip("Click anywhere to list the devices heard at the nearest "
                              "captured stop")
         self.plan.clicked.connect(self.plan_clicked)
-        self.devices_win = None
+        self.devices = StopDevicesPanel()
 
         # --- left column: route, survey, status, stops, capture buttons
         self.route_label = QLabel(objectName="heading")
@@ -389,7 +413,14 @@ class SurveyTab(QWidget):
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(0)
         rl.addLayout(bar)
-        rl.addWidget(self.plan, 1)
+        split = QSplitter(Qt.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(self.plan)
+        split.addWidget(self.devices)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        split.setSizes([520, 340])
+        rl.addWidget(split, 1)
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -419,8 +450,8 @@ class SurveyTab(QWidget):
         self.plan.stops = [(s["name"], s["x"], s["y"]) for s in route["stops"]]
         self.current = self._next_open(0)
         self.plan.inspected = None
-        if self.devices_win:
-            self.devices_win.hide()
+        self.devices.clear()
+        self._mark_inspected()
         self._fill_surveys()
         self.refresh_all()
 
@@ -485,9 +516,6 @@ class SurveyTab(QWidget):
         self.show_devices(p.stop)
 
     def show_devices(self, stop):
-        if self.devices_win is None:
-            self.devices_win = StopDevicesWindow(self)
-            self.devices_win.finished.connect(self._devices_closed)
         p = self.points[stop]
         loudest = sv.loudest_stops(self.points)
         devices = sv.stop_devices(p)
@@ -495,12 +523,9 @@ class SurveyTab(QWidget):
             where = loudest.get((d["kind"], d["identifier"]), (stop, 0))[0]
             d["loudest"] = where
             d["loudest_name"] = self.points[where].name
-        self.devices_win.show_stop(stop + 1, p, devices)
+        self.devices.show_stop(stop + 1, p, devices)
         self.plan.inspected = stop
-        self.plan.update()
-
-    def _devices_closed(self):
-        self.plan.inspected = None
+        self._mark_inspected()
         self.plan.update()
 
     def _list_row(self, row):
@@ -689,6 +714,7 @@ class SurveyTab(QWidget):
                 item = QListWidgetItem(s["name"])
                 item.setData(STATE_ROLE, state)
                 item.setData(DETAIL_ROLE, detail)
+                item.setData(INSPECTED_ROLE, i == self.plan.inspected)
                 if p and p.status == "done":
                     item.setToolTip(f"{p.count('wifi')} WiFi and {p.count('ble')} Bluetooth "
                                     "scans. Pick it to capture it again.")
@@ -696,6 +722,14 @@ class SurveyTab(QWidget):
             if active is not None:
                 self.stop_list.setCurrentRow(active)
         self.stop_list.blockSignals(False)
+
+    def _mark_inspected(self):
+        """Highlight the clicked stop in the list too, and scroll it into view."""
+        for i in range(self.stop_list.count()):
+            item = self.stop_list.item(i)
+            item.setData(INSPECTED_ROLE, i == self.plan.inspected)
+            if i == self.plan.inspected:
+                self.stop_list.scrollToItem(item)
 
     def progress(self):
         """'7/10' for the rail, or '' with no route."""
@@ -759,6 +793,9 @@ class SurveyTab(QWidget):
             i = self.target_box.findData(keep)
             if i >= 0:
                 self.target_box.setCurrentIndex(i)
+        # With a placeholder set, QComboBox no longer selects the first item itself.
+        if self.target_box.currentIndex() < 0 and self.target_box.count():
+            self.target_box.setCurrentIndex(0)
         self.target_box.setVisible(sv.LAYERS[layer][3])
         self.target_box.blockSignals(False)
 
@@ -773,10 +810,11 @@ class SurveyTab(QWidget):
                 if v is not None:
                     values[i] = v
         self.plan.values = values
-        self.plan.unit = unit
+        short, long_ = layer_units(layer)
+        self.plan.unit = short
         stops = sv.SIGNAL_STOPS if unit == "dBm" else sv.COUNT_STOPS
         vmin, vmax = sv.value_range(layer, list(values.values()))
-        self.legend.set_scale(stops, vmin, vmax, unit)
+        self.legend.set_scale(stops, vmin, vmax, long_)
         pm = self.plan.pixmap
         if not values or pm is None:
             self.plan.heat = None

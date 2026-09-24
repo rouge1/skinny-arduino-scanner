@@ -1,9 +1,9 @@
-"""Window listing every network/device heard at one survey stop."""
+"""Panel (under the survey map) listing every network/device heard at one stop."""
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QSlider, QTableView, QToolButton, QVBoxLayout)
+from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QSlider, QTableView, QToolButton, QVBoxLayout, QWidget)
 
 from ..decode import KIND_HELP
 from . import theme as T
@@ -143,17 +143,16 @@ def chip(text, tip):
     return b
 
 
-class StopDevicesWindow(QDialog):
-    """Non-modal; show_stop() replaces the contents on every map click."""
+class StopDevicesPanel(QWidget):
+    """show_stop() replaces the contents on every map click; clear() goes back
+    to the empty state."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Devices at stop")
-        self.resize(1180, 640)
         self.model = DeviceTable()
         self.proxy = KindFilter(self.model)
 
-        self.heading = QLabel(objectName="heading")
+        self.heading = QLabel(objectName="cardTitle")
         self.sub = QLabel(objectName="subheading")
 
         self.wifi_chip = chip("WiFi", "Show WiFi networks")
@@ -162,17 +161,19 @@ class StopDevicesWindow(QDialog):
         self.ble_chip.toggled.connect(lambda on: self._kind("ble", on))
         self.filter = QLineEdit(placeholderText="Search name, address, maker")
         self.filter.setClearButtonEnabled(True)
-        self.filter.setMinimumWidth(220)
+        self.filter.setMinimumWidth(100)
+        self.filter.setMaximumWidth(280)
         self.filter.textChanged.connect(self._text)
         QShortcut(QKeySequence.Find, self, activated=self.filter.setFocus)
 
         self.min_rssi = QSlider(Qt.Horizontal, minimum=-100, maximum=-30, value=-100)
-        self.min_rssi.setFixedWidth(150)
-        self.min_rssi.setToolTip("Hide anything weaker than this at this stop. Roughly: "
+        self.min_rssi.setMinimumWidth(70)
+        self.min_rssi.setMaximumWidth(150)
+        self.min_rssi.setToolTip("Minimum signal: hide anything weaker than this at this stop. Roughly: "
                                  "−60 or better is usually the same room, −80 or worse far away")
         self.min_rssi.valueChanged.connect(self._min_rssi)
         self.min_label = QLabel(objectName="fieldLabel")
-        self.min_label.setMinimumWidth(90)
+        self.min_label.setMinimumWidth(64)
         self.only_here = QCheckBox("Strongest here only")
         self.only_here.setToolTip("Only devices whose strongest reading on the whole walk "
                                   "was at this stop, so most likely located here")
@@ -184,14 +185,12 @@ class StopDevicesWindow(QDialog):
         bar.addWidget(self.wifi_chip)
         bar.addWidget(self.ble_chip)
         bar.addSpacing(6)
-        bar.addWidget(self.filter)
+        bar.addWidget(self.filter, 2)
         bar.addSpacing(10)
-        bar.addWidget(QLabel("Min signal", objectName="fieldLabel"))
-        bar.addWidget(self.min_rssi)
         bar.addWidget(self.min_label)
+        bar.addWidget(self.min_rssi, 1)
         bar.addWidget(self.only_here)
         bar.addStretch(1)
-        bar.addWidget(self.count)
 
         self.table = QTableView()
         self.table.setModel(self.proxy)
@@ -214,25 +213,33 @@ class StopDevicesWindow(QDialog):
             self.table.setColumnWidth(i, c[4])
         column_menu(self.table, "stop_devices", [c[0] for c in COLS if c[6]])
 
-        head = QVBoxLayout()
-        head.setSpacing(2)
+        head = QHBoxLayout()
+        head.setSpacing(12)
         head.addWidget(self.heading)
-        head.addWidget(self.sub)
+        head.addWidget(self.sub, 1)
+        head.addWidget(self.count)
+
+        self.controls = QWidget()
+        cl = QVBoxLayout(self.controls)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.addLayout(bar)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
-        lay.setSpacing(12)
+        lay.setContentsMargins(16, 12, 16, 8)
+        lay.setSpacing(10)
         lay.addLayout(head)
-        lay.addLayout(bar)
+        lay.addWidget(self.controls)
         lay.addWidget(self.table, 1)
         self._min_rssi(self.min_rssi.value())
+        self.clear()
 
     def _kind(self, kind, on):
         self.proxy.set_kind(kind, on)
         self._update_count()
 
     def _min_rssi(self, v):
-        self.min_label.setText("off" if v <= -100 else f"{v} dBm or more".replace("-", "−"))
+        self.min_label.setText("Any signal" if v <= -100
+                               else f"≥ {v} dBm".replace("-", "−"))
         self.proxy.set_min_rssi(v)
         self._update_count()
 
@@ -255,12 +262,17 @@ class StopDevicesWindow(QDialog):
     def show_stop(self, number, point, devices):
         for d in devices:
             d["here"] = d.get("loudest") == number - 1
-        self.setWindowTitle(f"Devices at {point.name}")
-        self.heading.setText(point.name)
+        self.heading.setText(f"Devices at {point.name}")
         when = f", captured at {point.started_at[11:16]}" if point.started_at else ""
         self.sub.setText(f"Stop {number}. Heard in {point.count('wifi')} WiFi and "
                          f"{point.count('ble')} Bluetooth scans{when}.")
         self.model.set_rows(devices)
+        self.controls.setEnabled(True)
         self._update_count()
-        self.show()
-        self.raise_()
+
+    def clear(self, hint="Click near a captured stop on the map to list what was heard there."):
+        self.heading.setText("Devices")
+        self.sub.setText(hint)
+        self.model.set_rows([])
+        self.controls.setEnabled(False)
+        self.count.setText("")
