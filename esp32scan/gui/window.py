@@ -261,6 +261,7 @@ class MainWindow(QMainWindow):
         self.worker.scan.connect(self.on_scan)
         self.worker.status.connect(self.on_status)
         self.worker.session.connect(self.on_session)
+        self.worker.log.connect(self.survey.on_log)
         self.worker.finished.connect(self.on_worker_finished)
         self.conn_label.setText(f"Connecting to {port}…")
         self.connect_btn.setChecked(True)
@@ -301,7 +302,7 @@ class MainWindow(QMainWindow):
 
     def on_event(self, ev):
         kind = ev["ev"]
-        if kind in ("button", "hello"):
+        if kind in ("button", "hello", "log_cleared"):
             self.survey.on_event(ev)
         if kind == "button":
             self.log(f"[board] BOOT: {ev['action']} (mark {ev.get('mark')})")

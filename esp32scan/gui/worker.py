@@ -15,6 +15,7 @@ class SerialWorker(QThread):
     scan = Signal(str, int, list, dict)  # kind, scan index, rows, scan_done event
     status = Signal(str, bool)           # message, connected
     session = Signal(str)                # db session name ("" when not recording)
+    log = Signal(list, dict)             # board survey log lines, log_begin event
 
     def __init__(self, port, mode, db_path, record):
         super().__init__()
@@ -66,6 +67,8 @@ class SerialWorker(QThread):
                         self.raw.emit(item[1])
                     elif item[0] == "event":
                         self.event.emit(item[1])
+                    elif item[0] == "log":
+                        self.log.emit(item[1], item[2])
                     else:
                         _, kind, index, rows, done = item
                         if store:

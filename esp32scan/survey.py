@@ -21,7 +21,8 @@ from pathlib import Path
 import numpy as np
 
 from . import PROJECT_ROOT
-from .decode import maker
+from .decode import enrich, maker
+from .protocol import parse_line
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS surveys(
@@ -122,8 +123,8 @@ class SurveyStore:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
 
-    def new_survey(self, route):
-        name = f"{route['name']} {datetime.now():%Y-%m-%d %H:%M}"
+    def new_survey(self, route, suffix=""):
+        name = f"{route['name']} {datetime.now():%Y-%m-%d %H:%M}{suffix}"
         stored = {k: v for k, v in route.items() if k != "path"}
         cur = self.db.execute(
             "INSERT INTO surveys(name,route,floorplan,created_at) VALUES(?,?,?,?)",
@@ -185,6 +186,80 @@ class SurveyStore:
             # needed back because empty scans don't change any value.
             out[stop] = Point(stop, name, x, y, status, t0, t1, list(scans.values()))
         return out
+
+
+# ---- importing a board's standalone log ------------------------------------
+
+def import_log(lines, route):
+    """Replay a board's survey log (captured on a power bank) into Points.
+
+    The log holds, per power-up, a boot line followed by the button events and
+    the scans that started during a capture, in the same JSON as the live
+    protocol. Accepted captures and skips take the route's stops in order;
+    rejected captures (too short) don't. A scan counts for a capture when it
+    started at or after the start press and finished by the stop press (board
+    millis(), which restart at every boot; a capture cut off by a reboot is
+    dropped). There's no wall clock on a power bank, so started_at/ended_at
+    are left empty.
+
+    Returns (points, notes): {stop index: Point}, and warnings for the user.
+    """
+    stops = route["stops"]
+    points, notes = {}, []
+    stop = 0
+    mark = None
+    pending = {"wifi": [], "ble": []}
+    extra_stops = 0
+
+    def take(kind):
+        rows, pending[kind] = pending[kind], []
+        return rows
+
+    for raw in lines:
+        ev = parse_line(raw)
+        if ev is None:
+            continue
+        kind = ev["ev"]
+        if kind == "boot":
+            if mark:
+                notes.append(f"A capture at stop {stop + 1} was cut off by a restart and dropped.")
+            mark = None
+            pending = {"wifi": [], "ble": []}
+        elif kind == "scan_start":
+            pending[ev["kind"]] = []
+        elif kind in ("wifi", "ble"):
+            pending[kind].append(enrich(kind, ev))
+        elif kind == "scan_done":
+            rows = take(ev["kind"])
+            if mark and ev.get("t0", -1) >= mark["t0"]:
+                mark["scans"].append((ev, Scan(ev["kind"], ev["scan"],
+                                               [reading(ev["kind"], r) for r in rows])))
+        elif kind == "button":
+            action = ev["action"]
+            if action == "start":
+                mark = {"t0": ev["t"], "scans": []}
+            elif action in ("stop", "skip"):
+                scans = []
+                if action == "stop" and mark:
+                    scans = [sc for done, sc in mark["scans"] if done.get("t1", 0) <= ev["t"]]
+                mark = None
+                if stop >= len(stops):
+                    extra_stops += 1
+                    continue
+                s = stops[stop]
+                status = "done" if action == "stop" and scans else "skipped"
+                if action == "stop" and not scans:
+                    notes.append(f"Stop {stop + 1} ({s['name']}) had no complete scan; "
+                                 "marked skipped.")
+                points[stop] = Point(stop, s["name"], s["x"], s["y"], status, "", "", scans)
+                stop += 1
+            elif action == "reject":
+                mark = None
+    if extra_stops:
+        notes.append(f"{extra_stops} capture(s) beyond the route's last stop were ignored.")
+    if mark:
+        notes.append(f"The log ends during a capture at stop {stop + 1}; it was dropped.")
+    return points, notes
 
 
 # ---- per-stop values -------------------------------------------------------

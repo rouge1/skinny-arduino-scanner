@@ -38,8 +38,9 @@ def find_port():
 
 class Link:
     """Owns the serial port. Call poll() in a loop; it returns a list of
-    ("raw", str) / ("event", dict) / ("scan", kind, index, rows, done_event)
-    tuples."""
+    ("raw", str) / ("event", dict) / ("scan", kind, index, rows, done_event) /
+    ("log", lines, log_begin_event) tuples. "log" is the board's survey log
+    (see dump_log()): its lines are the JSON the board stored, unparsed."""
 
     def __init__(self, port, mode="both"):
         self.port = port
@@ -58,6 +59,7 @@ class Link:
         self._last_hello_req = 0.0
         self._offset = None   # PC time - board time (s); see board_to_wall()
         self._last_board_t = 0
+        self._log = None      # lines of a survey-log dump in progress
 
     def open(self):
         self.ser.open()
@@ -82,6 +84,13 @@ class Link:
         cmd = MODE_CMDS.get(self.mode, CMD_STOP)
         self.send(CMD_JSON + cmd + CMD_STATUS)
         self._last_hello_req = time.time()
+
+    def dump_log(self):
+        """Ask for the board's stored survey log; arrives as a "log" item."""
+        self.send(b"d")
+
+    def clear_log(self):
+        self.send(b"c")
 
     def set_mode(self, mode):
         self.mode = mode
@@ -119,7 +128,18 @@ class Link:
         return None if self._offset is None else self._offset + board_ms / 1000
 
     def _handle(self, line):
+        if self._log is not None and line.startswith("L"):
+            # A stored log line: don't treat it as a live event.
+            self._log["lines"].append(line[1:])
+            self._last_json = time.time()
+            return []
         ev = parse_line(line)
+        if ev is not None and ev["ev"] == "log_begin":
+            self._log = {"begin": ev, "lines": []}
+            return []
+        if ev is not None and ev["ev"] == "log_end" and self._log is not None:
+            log, self._log = self._log, None
+            return [("log", log["lines"], log["begin"])]
         if ev is None:
             if line.count("\ufffd") >= 3:
                 # The ROM bootloader always prints at 115200 baud, which reads

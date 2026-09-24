@@ -50,6 +50,8 @@ pollute `data/captures.db`.
   the capture when `mark.t0 <= scan.t0` and `scan.t1 <= stop.t`, all in board
   `millis()`. Keep that comparison in board time: PC receive times lag by up
   to a scan plus printing.
+- `Link` turns a `d` dump (`log_begin`, `L`-prefixed lines, `log_end`) into one
+  `("log", lines, begin)` item. `L` lines must never be parsed as live events.
 - `esp32scan/gui/`: `worker.py` (QThread that owns the serial port *and* the
   DB connection, so all serial writes go through its command queue),
   `models.py` (append-only `DeviceModel` + `DeviceFilter` proxy; rows are
@@ -58,9 +60,16 @@ pollute `data/captures.db`.
 
 ## Gotchas
 
-- **Partition scheme**: WiFi + BLE is about 1.6 MB, too big for the default
-  1.2 MB app partition. `sketch.yaml` pins `PartitionScheme=huge_app`. Don't
-  drop it.
+- **Partition scheme**: WiFi + BLE is about 1.7 MB, too big for the default
+  1.2 MB app partition. `sketch.yaml` pins `PartitionScheme=no_ota` (2 MB app +
+  2 MB "spiffs" partition that LittleFS uses for the survey log). Don't drop it.
+- **Standalone survey log** (`/survey.jsonl`): captures are written only while
+  `g_host` is false, and `g_host` becomes true when an app sends `j`. Log
+  lines are the live JSON, built once in `g_line` by `lineAdd`/`lineEnd` and
+  sent to serial and/or flash. `survey.import_log()` replays them, and it
+  must stay consistent with the live assignment in `SurveyTab`.
+  The stop count for the LED is in NVS (`Preferences` "survey"/"stops").
+  The button task writes flash, so it needs its 8 KB stack.
 - **BLE heap**: `setAdvertisedDeviceCallbacks(cb, true)` (wantDuplicates) is
   deliberate. With `false`, the BLE library keeps its own copy of every
   device, and in a crowded area (100+ devices here) that exhausts the heap →

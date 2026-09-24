@@ -85,7 +85,7 @@ Result: **the connected board matches the documentation** (classic ESP-WROOM-32 
 ## Programming notes
 
 - Default boot mode; hold **BOOT** + press **EN** to enter download mode if auto-reset fails.
-- Arduino board target used here: `esp32:esp32:esp32` with `PartitionScheme=huge_app`
-  (set in `tools/esp32-ai/sketch.yaml`; WiFi + BLE doesn't fit the default 1.2 MB app partition).
+- Arduino board target used here: `esp32:esp32:esp32` with `PartitionScheme=no_ota`
+  (set in `tools/esp32-ai/sketch.yaml`; WiFi + BLE doesn't fit the default 1.2 MB app partition, and the other 2 MB holds the standalone survey log).
   `esp32:esp32:esp32doit-devkit-v1` also matches this board.
 - Requires `arduino-cli core install esp32:esp32` (3.3.12 installed).

@@ -59,7 +59,7 @@ On this PC it enumerates as `/dev/ttyUSB0`. Full specs are in
 
 ```
 tools/esp32-ai/esp32-ai.ino   firmware (Arduino / ESP32 core 3.x)
-tools/esp32-ai/sketch.yaml    default FQBN (huge_app partition) + port
+tools/esp32-ai/sketch.yaml    default FQBN (no_ota partition: 2 MB app + 2 MB log) + port
 tools/serial-monitor.py       headless terminal monitor + DB logger
 tools/update-oui.py           re-download the IEEE OUI registries
 serial-monitor.py             symlink → tools/serial-monitor.py
@@ -91,8 +91,9 @@ arduino-cli upload  tools/esp32-ai
 ```
 
 `sketch.yaml` supplies the board (`esp32:esp32:esp32`) with the
-**Huge APP (3 MB, no OTA)** partition scheme. WiFi + BLE together are about
-1.6 MB, which doesn't fit the default 1.2 MB app partition. It also sets
+**No OTA (2 MB app / 2 MB SPIFFS)** partition scheme. WiFi + BLE together
+are about 1.7 MB, which doesn't fit the default 1.2 MB app partition, and the
+2 MB data partition holds the survey log (LittleFS). It also sets
 the port to `/dev/ttyUSB0`.
 
 ### Python
@@ -125,17 +126,45 @@ running the CLI, and vice versa.
 
 ## Heat-map survey
 
-Carry the laptop with the ESP32 plugged in, stop at each spot on a route, and
-use the board's **BOOT** button:
+Walk a route, stopping at each spot, and use the board's **BOOT** button.
+Either run the ESP32 **on a USB power bank** and import the captures
+afterwards, or carry the laptop with the board plugged in and watch the map
+fill in live.
 
 | BOOT | Effect | LED |
 |---|---|---|
-| short press | start capturing at this stop, or stop the capture | solid while capturing |
-| hold ≥ 1 s | skip this stop (cancels a capture in progress) | 3 quick flashes |
+| short press | start capturing at this stop | solid while capturing |
+| short press again | stop: capture accepted | N slow blinks = stop N done |
+| | or rejected as too short (no complete WiFi *and* BLE scan inside) | fast flicker for 2 s; capture again |
+| hold ≥ 1 s | skip this stop (cancels a capture in progress) | 3 quick flashes, then N slow blinks |
+| (idle) | scanning, not capturing | short blip every 2 s |
+| (power-up) | | N slow blinks = stops already stored, 2 quick flashes = none |
 
 **EN is reset. Don't use it during a survey.**
 
-1. Start `./scanner-gui` and open the **Survey** tab. It loads the first route
+### On a power bank (no laptop)
+
+Until an app connects, the board stores every capture in its flash (2 MB,
+about 46 KB per stop, so 40+ stops fit). Stops are taken in route order:
+each accepted capture or skip is the next stop, and rejected captures
+don't count. Stored captures survive power loss; after a restart the LED
+blinks how many stops are stored, and the walk continues where it left off.
+
+1. Plug the board into the power bank. After a few seconds you get two
+   quick flashes, then a blip every 2 s.
+2. At each stop: press BOOT, wait 20–30 s, press BOOT. Count the blinks.
+3. Back at the PC: plug the board in, run `./scanner-gui`, open **Survey**
+   and click **Import from board**. The captures become a survey named
+   "… (from board)". The app then offers to clear the board for the next walk.
+
+Some power banks switch off when the current draw is low. The ESP32 draws
+about 100–150 mA while scanning, which keeps most banks on. If yours cuts
+out, the LED stops blipping.
+
+### With the laptop
+
+1. Start `./scanner-gui` and open the **Survey** tab. (While an app is
+   connected the board doesn't store captures in flash.) It loads the first route
    in `routes/`. The panel shows the next stop.
 2. At each stop, press BOOT, wait **20–30 s**, then press BOOT again. Only
    scans that ran entirely inside the capture count, and a WiFi + Bluetooth
@@ -177,6 +206,7 @@ The host sends single characters:
 | `j` / `t` | JSON-lines output / human-readable tables (default after boot) |
 | `?` | print a status (`hello`) line |
 | `m` / `k` | same as a short / long BOOT press |
+| `d` / `c` | dump / clear the stored survey log |
 
 The port runs at **460800 baud** (for a plain serial monitor:
 `arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=460800`). The ESP32's boot
@@ -193,6 +223,11 @@ In JSON mode, every line is one object with an `ev` field:
 {"ev":"scan_done","kind":"ble","scan":1,"count":134,"ms":5007,"t0":4301,"t1":9308,"heap":49040}
 {"ev":"button","action":"start","mark":1,"t":4298}
 ```
+
+Button `action`s are `start`, `stop`, `reject` (too short), `skip` and `full`
+(log full). `d` sends `{"ev":"log_begin","bytes":…,"stops":…}`, then each
+stored line prefixed with `L`, then `{"ev":"log_end"}`. The stored lines are
+the same JSON, plus a `{"ev":"boot"}` line after each power-up.
 
 `t`, `t0` and `t1` are the board's `millis()`. The app matches scans to
 captures in board time, so serial delay doesn't matter. It also estimates
@@ -240,7 +275,7 @@ FROM entries WHERE kind = 'wifi' GROUP BY identifier ORDER BY 4 DESC;
 - **`Permission denied` on the port**: not in `dialout` (see Setup).
 - **`text section exceeds available space`**: you compiled without
   `sketch.yaml`'s partition scheme. Pass
-  `--fqbn esp32:esp32:esp32:PartitionScheme=huge_app`.
+  `--fqbn esp32:esp32:esp32:PartitionScheme=no_ota`.
 - **Repeated "(boot ROM output …)" lines in the Console**: the board is
   rebooting in a loop, usually because USB power sags during WiFi transmit
   bursts. Try another USB port or cable. An `abort()` / `Backtrace:` line is a

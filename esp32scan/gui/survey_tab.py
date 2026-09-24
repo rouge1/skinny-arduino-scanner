@@ -9,7 +9,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QFormLayout, QGroupBox,
                                QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-                               QPushButton, QSlider, QSplitter, QVBoxLayout, QWidget)
+                               QMessageBox, QPushButton, QSlider, QSplitter,
+                               QVBoxLayout, QWidget)
 
 from .. import PROJECT_ROOT
 from .. import survey as sv
@@ -170,6 +171,7 @@ class SurveyTab(QWidget):
         self.current = 0
         self.mark = None      # {"stop", "t0" (board ms), "wall", "scans": [(done, Scan)]}
         self.message = ""
+        self.board_log = None  # (stops, bytes) stored on the board, from its hello
 
         self.plan = FloorPlan()
         self.plan.stop_clicked.connect(self.select_stop)
@@ -199,6 +201,10 @@ class SurveyTab(QWidget):
         btns = QHBoxLayout()
         btns.addWidget(self.capture_btn)
         btns.addWidget(self.skip_btn)
+        self.import_btn = QPushButton("Import from board")
+        self.import_btn.setToolTip("Download the captures the board stored while running "
+                                   "on its own (power bank) and turn them into a survey")
+        self.import_btn.clicked.connect(self.import_from_board)
 
         sbox = QGroupBox("Survey")
         sl = QVBoxLayout(sbox)
@@ -208,6 +214,7 @@ class SurveyTab(QWidget):
         sl.addWidget(QLabel("Stops (click one to capture it next):"))
         sl.addWidget(self.stop_list, 1)
         sl.addLayout(btns)
+        sl.addWidget(self.import_btn)
 
         # --- heat map controls
         self.layer_box = QComboBox()
@@ -318,13 +325,18 @@ class SurveyTab(QWidget):
     def set_connected(self, connected):
         self.capture_btn.setEnabled(connected)
         self.skip_btn.setEnabled(connected)
+        self.import_btn.setEnabled(connected)
         self.connected = connected
+        if not connected:
+            self.board_log = None
         self.update_status()
 
     def _send(self, cmd):
-        if not self.send(cmd):
-            self.message = "Not connected to the board."
-            self.update_status()
+        if self.send(cmd):
+            return True
+        self.message = "Not connected to the board."
+        self.update_status()
+        return False
 
     def on_event(self, ev):
         kind = ev.get("ev")
@@ -336,16 +348,68 @@ class SurveyTab(QWidget):
                 self._stop(ev)
             elif action == "skip":
                 self._skip(ev)
-        elif kind == "hello" and self.mark and not ev.get("marking"):
-            self.mark = None
-            self.message = "The board restarted during a capture. Capture this stop again."
+            elif action == "reject":
+                self.mark = None
+                self.message = ("Too short: the board needs a complete WiFi and Bluetooth "
+                                "scan inside a capture. Capture this stop again (20-30 s).")
+                self.refresh_all(heat=False)
+            elif action == "full":
+                self.message = "The board's survey log is full. Import it, then clear it."
+                self.update_status()
+        elif kind == "hello":
+            if "stops" in ev:
+                self.board_log = (ev["stops"], ev.get("log_bytes", 0))
+            if self.mark and not ev.get("marking"):
+                self.mark = None
+                self.message = "The board restarted during a capture. Capture this stop again."
             self.refresh_all(heat=False)
+        elif kind == "log_cleared":
+            self.board_log = (0, 0)
+            self.message = (self.message + "<br>" if self.message else "") + \
+                "Cleared the board's survey log."
+            self.update_status()
 
     def on_scan(self, kind, index, rows, done):
         if self.mark and done.get("t0", -1) >= self.mark["t0"]:
             scan = sv.Scan(kind, index, [sv.reading(kind, r) for r in rows])
             self.mark["scans"].append((done, scan))
             self.update_status()
+
+    def import_from_board(self):
+        if self._send(b"d"):
+            self.message = "Downloading the board's survey log…"
+            self.update_status()
+
+    def on_log(self, lines, begin):
+        """The board's stored log arrived: replay it into a new survey."""
+        if not self.route:
+            self.message = "Load a route before importing."
+            self.update_status()
+            return
+        points, notes = sv.import_log(lines, self.route)
+        if not points:
+            self.message = "The board has no stored captures."
+            self.update_status()
+            return
+        route = self.route
+        sid = self.store.new_survey(route, " (from board)")
+        for p in points.values():
+            self.store.save_point(sid, p)
+        self.set_route(route, sid, self.store.points(sid))
+        done = sum(1 for p in points.values() if p.status == "done")
+        skipped = len(points) - done
+        self.message = (f"Imported {done} captured and {skipped} skipped stops "
+                        f"({begin.get('bytes', 0) // 1024} KB).")
+        if notes:
+            self.message += "<br>" + "<br>".join(notes)
+        self.update_status()
+        answer = QMessageBox.question(
+            self, "Clear the board?",
+            f"Imported {len(points)} stops into “{self.survey_box.currentText()}”.\n\n"
+            "Clear the board's survey log so the next walk starts from stop 1?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            self._send(b"c")
 
     def _wall(self, ev):
         t = ev.get("_wall") or time.time()
@@ -462,6 +526,10 @@ class SurveyTab(QWidget):
                     f"Hold BOOT 1 s to skip.</small>")
         if not getattr(self, "connected", False):
             html += "<br><small style='color:#d29922'>Board not connected.</small>"
+        elif self.board_log and self.board_log[0]:
+            stops, size = self.board_log
+            html += (f"<br><small style='color:#58a6ff'>The board has {stops} stops stored "
+                     f"from a walk ({size // 1024} KB): click Import from board.</small>")
         if self.message:
             html += f"<br><small>{self.message}</small>"
         self.status.setText(html)
