@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 
 # Capture logs: contain MAC addresses / SSIDs of nearby devices
-data/
+/data/
 *.csv
 
 # Arduino build output

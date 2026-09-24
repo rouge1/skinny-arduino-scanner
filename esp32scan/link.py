@@ -7,11 +7,15 @@ import time
 
 import serial
 
+from .decode import enrich
 from .protocol import (BOOT_BANNER, CMD_JSON, CMD_STATUS, CMD_STOP, MODE_CMDS,
                        parse_line)
 from .store import now_iso
 
-BAUD = 115200
+BAUD = 460800
+# Re-handshake after this long without JSON. Must exceed the longest silent
+# stretch in normal operation: a 5 s BLE scan plus printing it.
+SILENCE_S = 12
 PORT_PATTERNS = ("/dev/serial/by-id/*", "/dev/ttyUSB*", "/dev/ttyACM*")
 
 
@@ -92,7 +96,7 @@ class Link:
                 out.extend(self._handle(line))
         # No JSON for a while (e.g. a reboot we missed): ask again.
         now = time.time()
-        if (now - self._last_json > 4 and now - self._last_hello_req > 4
+        if (now - self._last_json > SILENCE_S and now - self._last_hello_req > SILENCE_S
                 and self.mode != "idle"):
             self.handshake()
         return out
@@ -100,6 +104,10 @@ class Link:
     def _handle(self, line):
         ev = parse_line(line)
         if ev is None:
+            if line.count("\ufffd") >= 3:
+                # The ROM bootloader always prints at 115200 baud, which reads
+                # as garbage at our 460800. (Firmware panics use our baud.)
+                return [("raw", "(boot ROM output at 115200 baud, not shown)")]
             if BOOT_BANNER in line:
                 # Board rebooted; setup() needs a moment before it reads serial.
                 time.sleep(0.3)
@@ -110,7 +118,7 @@ class Link:
         kind = ev["ev"]
         if kind in ("wifi", "ble"):
             ev["_at"] = now_iso()
-            self._rows[kind].append(ev)
+            self._rows[kind].append(enrich(kind, ev))
             return []
         if kind == "scan_start":
             self._rows[ev["kind"]] = []

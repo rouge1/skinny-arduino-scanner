@@ -29,7 +29,8 @@ import serial  # noqa: E402
 
 from esp32scan import DEFAULT_DB  # noqa: E402
 from esp32scan.link import Link, find_port  # noqa: E402
-from esp32scan.protocol import MODE_LABELS, vendor_name  # noqa: E402
+from esp32scan.decode import maker  # noqa: E402
+from esp32scan.protocol import MODE_LABELS  # noqa: E402
 from esp32scan.store import Store  # noqa: E402
 
 KEYS = {"b": "bt", "w": "wifi", "x": "both"}
@@ -64,15 +65,15 @@ def print_scan(kind, index, rows, done):
     secs = done.get("ms", 0) / 1000
     if kind == "wifi":
         print(f"\n=== WiFi scan #{index}  ({len(rows)} networks, {secs:.1f}s) ===")
-        print("RSSI  CH  SEC       BSSID              SSID")
+        print("RSSI  CH  SEC       BSSID              VENDOR                SSID")
         for r in rows:
             print(f"{r['rssi']:4d}  {r['ch']:2d}  {r['sec']:<8}  {r['bssid']}  "
-                  f"{r['ssid'] or '(hidden)'}")
+                  f"{r['vendor'][:20]:<20}  {r['ssid'] or '(hidden)'}")
     else:
         print(f"\n=== BLE scan #{index}  ({len(rows)} devices, {secs:.1f}s) ===")
-        print("RSSI  ADDRESS            VENDOR        NAME")
+        print("RSSI  ADDRESS            TYPE     MAKER                 NAME")
         for r in rows:
-            print(f"{r['rssi']:4d}  {r['addr']}  {vendor_name(r.get('mfr')):<12}  "
+            print(f"{r['rssi']:4d}  {r['addr']}  {r['kind']:<7}  {maker(r)[:20]:<20}  "
                   f"{r['name'] or '(unnamed)'}")
     sys.stdout.flush()
 

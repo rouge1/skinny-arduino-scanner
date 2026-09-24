@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <Arduino.h>
 
+// Serial runs at 460800 baud (the BLE payloads are sent as hex).
 // Serial commands (single characters, case-insensitive):
 //   b = Bluetooth only   w = WiFi only   x = both   s = stop scanning
 //   j = JSON-lines output (used by the desktop GUI)   t = text tables (default)
@@ -14,7 +15,7 @@
 static const uint32_t PHASE_MS = 5000;
 static const uint32_t BLE_SCAN_SECONDS = 5;
 static const int LED_PIN = 2;
-static const int FW_VERSION = 2;
+static const int FW_VERSION = 3;
 static const size_t MAX_BLE_DEVICES = 256;  // cap per scan so a crowded area can't exhaust the heap
 
 enum Mode { MODE_BT, MODE_WIFI, MODE_BOTH, MODE_IDLE };
@@ -34,13 +35,17 @@ static void ledTask(void *) {
   }
 }
 
+// One BLE device per scan. Fixed size (no heap Strings) so the whole list is
+// allocated once in setup(). The host decodes the raw advertising payload
+// (AD structures: name, company, services, beacons...); the firmware only
+// looks inside it for the name in text mode.
+static const size_t MAX_PAYLOAD = 62;  // legacy advertising data + scan response
 struct Found {
-  String addr;
-  String name;
-  int rssi;
-  int mfr;     // Bluetooth SIG company id, -1 if none
-  int tx;      // advertised TX power, INT16_MIN if none
-  String uuid; // first advertised service UUID
+  uint8_t addr[6];  // most significant octet first, as displayed
+  uint8_t atype;    // esp_ble_addr_type_t: 0 public, 1 random, 2/3 RPA
+  int8_t rssi;
+  uint8_t len;
+  uint8_t payload[MAX_PAYLOAD];
 };
 static std::vector<Found> g_bt;
 
@@ -55,29 +60,31 @@ static std::vector<Net> g_wifi;
 
 class ScanCB : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice dev) override {
-    String addr = dev.getAddress().toString().c_str();
+    BLEAddress a = dev.getAddress();
+    const uint8_t *addr = a.getNative();
     Found *f = nullptr;
     for (auto &e : g_bt) {
-      if (e.addr == addr) {
+      if (memcmp(e.addr, addr, 6) == 0) {
         f = &e;
         break;
       }
     }
     if (!f) {
       if (g_bt.size() >= MAX_BLE_DEVICES) return;
-      g_bt.push_back(Found{addr, "", 0, -1, INT16_MIN, ""});
+      g_bt.emplace_back();
       f = &g_bt.back();
+      memcpy(f->addr, addr, 6);
+      f->len = 0;
     }
+    f->atype = dev.getAddressType();
     f->rssi = dev.getRSSI();
-    if (dev.haveName()) f->name = dev.getName().c_str();
-    if (dev.haveManufacturerData()) {
-      String md = dev.getManufacturerData();
-      if (md.length() >= 2) {
-        f->mfr = (uint8_t)md[0] | ((uint8_t)md[1] << 8);
-      }
+    // Keep the longest payload seen this scan: advertisements that came with
+    // a scan response carry both, and so usually the name.
+    size_t len = min(dev.getPayloadLength(), MAX_PAYLOAD);
+    if (len >= f->len) {
+      memcpy(f->payload, dev.getPayload(), len);
+      f->len = len;
     }
-    if (dev.haveTXPower()) f->tx = dev.getTXPower();
-    if (dev.haveServiceUUID()) f->uuid = dev.getServiceUUID().toString().c_str();
   }
 };
 
@@ -184,22 +191,40 @@ static void printScanDone(const char *kind, uint32_t n, size_t count, uint32_t m
                 (unsigned long)ESP.getFreeHeap());
 }
 
+static void fmtAddr(const uint8_t *a, char *out) {
+  snprintf(out, 18, "%02x:%02x:%02x:%02x:%02x:%02x", a[0], a[1], a[2], a[3], a[4], a[5]);
+}
+
+// The Complete (0x09) or else Shortened (0x08) Local Name AD structure, for
+// the text tables. Returns the name's length and points *name at it.
+static size_t findName(const uint8_t *p, size_t len, const char **name) {
+  size_t best = 0;
+  for (size_t i = 0; i + 1 < len && p[i];) {
+    size_t n = p[i];
+    uint8_t t = p[i + 1];
+    if (i + 1 + n > len) break;
+    if (t == 0x09 || (t == 0x08 && !best)) {
+      *name = (const char *)&p[i + 2];
+      best = n - 1;
+      if (t == 0x09) break;
+    }
+    i += 1 + n;
+  }
+  return best;
+}
+
 void printBt(uint32_t n, uint32_t ms) {
   std::sort(g_bt.begin(), g_bt.end(),
             [](const Found &a, const Found &b) { return a.rssi > b.rssi; });
+  char addr[18];
 
   if (g_json) {
     for (auto &f : g_bt) {
-      Serial.printf("{\"ev\":\"ble\",\"scan\":%lu,\"addr\":\"%s\",\"rssi\":%d,\"name\":",
-                    (unsigned long)n, f.addr.c_str(), f.rssi);
-      jsonStr(f.name);
-      if (f.mfr >= 0) Serial.printf(",\"mfr\":%d", f.mfr);
-      if (f.tx != INT16_MIN) Serial.printf(",\"tx\":%d", f.tx);
-      if (f.uuid.length()) {
-        Serial.print(",\"uuid\":");
-        jsonStr(f.uuid);
-      }
-      Serial.println("}");
+      fmtAddr(f.addr, addr);
+      Serial.printf("{\"ev\":\"ble\",\"scan\":%lu,\"addr\":\"%s\",\"at\":%u,\"rssi\":%d,\"adv\":\"",
+                    (unsigned long)n, addr, f.atype, f.rssi);
+      for (size_t i = 0; i < f.len; i++) Serial.printf("%02x", f.payload[i]);
+      Serial.println("\"}");
     }
     printScanDone("ble", n, g_bt.size(), ms);
     return;
@@ -211,8 +236,11 @@ void printBt(uint32_t n, uint32_t ms) {
   Serial.println("----  ----  -------------------  --------------------------------");
   int i = 1;
   for (auto &f : g_bt) {
-    Serial.printf("%4d  %4d  %-19s  %s\n", i++, f.rssi, f.addr.c_str(),
-                  f.name.length() ? f.name.c_str() : "(unnamed)");
+    const char *name = nullptr;
+    size_t len = findName(f.payload, f.len, &name);
+    fmtAddr(f.addr, addr);
+    Serial.printf("%4d  %4d  %-19s  %.*s\n", i++, f.rssi, addr, (int)(len ? len : 9),
+                  len ? name : "(unnamed)");
   }
   if (g_bt.empty()) Serial.println("  (no devices found)");
   Serial.println();
@@ -282,7 +310,7 @@ void doBleScan(uint32_t n) {
 }
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(460800);
   delay(500);
   Serial.println();
   Serial.println("ESP32 Collector - WiFi + Bluetooth scanner");

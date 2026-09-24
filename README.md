@@ -5,7 +5,7 @@ and streams the results over USB to a desktop GUI on this PC. The GUI shows
 them live, charts signal strength over time and logs every scan to SQLite.
 
 ```
-┌──────────────┐  USB serial (115200)   ┌────────────────────────────┐
+┌──────────────┐  USB serial (460800)   ┌────────────────────────────┐
 │ ESP32 DevKit │ ─── JSON lines ──────▶ │ scanner-gui (PySide6)      │
 │ esp32-ai.ino │ ◀── 1-char commands ── │  tables · channel map ·    │
 └──────────────┘                        │  signal history · CSV      │
@@ -16,15 +16,25 @@ them live, charts signal strength over time and logs every scan to SQLite.
 
 ## Features
 
-- **WiFi tab**: SSID, BSSID, channel, security, live signal bar, best signal
-  seen, how many scans it appeared in, first/last seen. Hidden networks are
-  included.
+- **WiFi tab**: SSID, BSSID, vendor (from the IEEE OUI registry), channel,
+  security, live signal bar, best signal seen, how many scans it appeared in,
+  first/last seen. Hidden networks are included. BSSIDs with the
+  locally-administered bit set show as `(virtual/local)`: they are the extra
+  virtual networks an access point runs next to its main one, so they have no
+  vendor.
 - **Channel map**: the usual WiFi-analyser view, where each network is an arch
   over its 2.4 GHz channel. It shows at a glance how crowded channels 1/6/11
   are.
-- **Bluetooth tab**: address, name, vendor (decoded from the manufacturer
-  ID, e.g. Apple, Microsoft, Samsung), signal, advertised TX power, service
-  UUID.
+- **Bluetooth tab**: address and its **type** (public / random static / RPA /
+  NRPA; hover for what each means), name, maker, signal, advertised TX power,
+  services, and an Info column with beacons (iBeacon, Eddystone), Apple
+  Continuity messages (Find My, Nearby Info, AirPods pairing, AirPlay…) and
+  appearance. The ESP32 sends each device's raw advertising payload, and the
+  PC decodes it against the Bluetooth SIG's assigned numbers (4,000+
+  companies, service UUIDs, appearance values). The maker comes from the
+  manufacturer data, or from the OUI for public addresses.
+- **Details** (Bluetooth): every advertising data structure of the selected
+  device, decoded, plus the raw bytes.
 - **Signal history**: RSSI over the last 10 minutes for the selected rows
   (or the strongest few when nothing is selected). Multi-select works.
 - Devices persist across scans. Rows missing from the latest scan turn grey.
@@ -49,10 +59,15 @@ On this PC it enumerates as `/dev/ttyUSB0`. Full specs are in
 tools/esp32-ai/esp32-ai.ino   firmware (Arduino / ESP32 core 3.x)
 tools/esp32-ai/sketch.yaml    default FQBN (huge_app partition) + port
 tools/serial-monitor.py       headless terminal monitor + DB logger
+tools/update-oui.py           re-download the IEEE OUI registries
 serial-monitor.py             symlink → tools/serial-monitor.py
 esp32scan/                    Python package shared by GUI and CLI
-  protocol.py                   serial protocol constants, JSON parsing, BLE vendor table
+  protocol.py                   serial protocol constants, JSON parsing
   link.py                       port discovery, serial link, scan grouping
+  decode.py                     raw rows → display fields (address type, maker, notes)
+  addata.py, assigned/          BLE advertising-data decoder + SIG assigned numbers
+                                (vendored from ble-scanner)
+  oui.py, ieee/oui.tsv.gz       MAC vendor lookup (IEEE MA-L/MA-M/MA-S)
   store.py                      SQLite capture log
   gui/                          PySide6 + pyqtgraph desktop app
 scanner-gui                   GUI launcher
@@ -115,19 +130,29 @@ The host sends single characters:
 | `j` / `t` | JSON-lines output / human-readable tables (default after boot) |
 | `?` | print a status (`hello`) line |
 
+The port runs at **460800 baud** (for a plain serial monitor:
+`arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=460800`). The ESP32's boot
+ROM always prints at 115200, so its few boot lines look like garbage at that
+rate. That's expected.
+
 In JSON mode, every line is one object with an `ev` field:
 
 ```json
 {"ev":"hello","fw":"esp32-ai","ver":2,"mode":"both","mac":"04:B2:47:06:0A:C0"}
 {"ev":"scan_start","kind":"wifi","scan":1}
 {"ev":"wifi","scan":1,"bssid":"8C:30:66:DE:51:20","rssi":-54,"ch":6,"sec":"WPA2/3","ssid":"SkinnyRD"}
-{"ev":"ble","scan":1,"addr":"59:c4:b6:26:d9:97","rssi":-58,"name":"","mfr":76,"tx":12}
-{"ev":"scan_done","kind":"ble","scan":1,"count":147,"ms":5008,"heap":48472}
+{"ev":"ble","scan":1,"addr":"90:70:69:10:be:e1","at":0,"rssi":-67,"adv":"02010611079eca…0f094c6f526120466f7848756e746572"}
+{"ev":"scan_done","kind":"ble","scan":1,"count":134,"ms":5007,"heap":59052}
 ```
+
+`at` is the ESP32's address type (bit 0 set = random). `adv` is the device's
+longest advertising payload in that scan, as hex. Advertisements that came
+with a scan response include it (up to 62 bytes). The PC does all the
+decoding.
 
 Opening the port resets the board, which then boots in text mode. The host
 watches for the boot banner and re-sends `j` + the mode. It also re-sends
-them if no JSON arrives for 4 s, so a board reboot recovers by itself.
+them if no JSON arrives for 12 s, so a board reboot recovers by itself.
 
 ## Database
 
@@ -137,10 +162,13 @@ them if no JSON arrives for 4 s, so a board reboot recovers by itself.
 - `scans`: one row per completed scan (kind `wifi`/`ble`, index, time, count)
 - `entries`: one row per network/device per scan: `rssi`, `identifier`
   (BSSID or BLE address), `name` (SSID or BLE name), `channel`, `security`,
-  and `extra` (JSON: BLE `mfr`, `tx`, `uuid`)
+  and `extra` (JSON). For WiFi, `extra` holds the OUI `vendor`. For BLE it
+  holds the address type (`at`, `kind`), the decoded `company` and the raw
+  payload `adv`, which `esp32scan.addata.parse()` can decode again later.
 
-The first session in the file was recorded on the Mac mini with an older
-firmware. Its WiFi rows have the SSID in `identifier` and no BSSID.
+Sessions recorded with older firmware differ. The very first one (from the
+Mac mini) has the SSID in `identifier` for WiFi, and firmware v2 sessions
+have BLE `mfr`/`tx`/`uuid` in `extra` instead of `adv`.
 
 Example: strongest sighting of every network:
 
@@ -155,9 +183,10 @@ FROM entries WHERE kind = 'wifi' GROUP BY identifier ORDER BY 4 DESC;
 - **`text section exceeds available space`**: you compiled without
   `sketch.yaml`'s partition scheme. Pass
   `--fqbn esp32:esp32:esp32:PartitionScheme=huge_app`.
-- **Repeated `rst:` / `ets Jul 29 2019` boot lines**: the board is rebooting
-  in a loop, usually because USB power sags during WiFi transmit bursts. Try
-  another USB port or cable. A `abort()` / `Backtrace:` line is a firmware
-  crash instead; see the Console tab.
+- **Repeated "(boot ROM output …)" lines in the Console**: the board is
+  rebooting in a loop, usually because USB power sags during WiFi transmit
+  bursts. Try another USB port or cable. An `abort()` / `Backtrace:` line is a
+  firmware crash instead.
+- **Vendors look out of date**: run `.venv/bin/python tools/update-oui.py`.
 - **No data**: press **EN** on the board. If a flash was interrupted, hold
   **BOOT** and tap **EN**, then re-upload.

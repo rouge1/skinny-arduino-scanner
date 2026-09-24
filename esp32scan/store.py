@@ -3,9 +3,11 @@
 Schema: one row in `sessions` per connection, one row in `scans` per
 completed scan, one row in `entries` per network/device in that scan.
 
-For WiFi entries `identifier` is the BSSID and `name` the SSID; for BLE
-entries `identifier` is the device address. BLE vendor / TX power / service
-UUID go in `extra` as JSON. (The first session in the db, recorded on the Mac
+For WiFi entries `identifier` is the BSSID and `name` the SSID, with the OUI
+vendor in `extra`. For BLE entries `identifier` is the device address and
+`name` the advertised name; `extra` holds the address type (`at`, `kind`),
+the decoded `company` and the raw advertising payload (`adv`, hex), from
+which everything else can be decoded again with esp32scan.addata. (The first session in the db, recorded on the Mac
 before BSSIDs were reported, has the SSID in `identifier`.)
 """
 
@@ -89,11 +91,12 @@ class Store:
         scan_id = cur.lastrowid
         for r in rows:
             if kind == "wifi":
-                vals = (r["bssid"], r.get("ssid", ""), r.get("ch"), r.get("sec"), None)
-            else:
-                extra = {k: r[k] for k in ("mfr", "tx", "uuid") if k in r}
-                vals = (r["addr"], r.get("name", ""), None, None,
+                extra = {"vendor": r["vendor"]} if r.get("vendor") else None
+                vals = (r["bssid"], r.get("ssid", ""), r.get("ch"), r.get("sec"),
                         json.dumps(extra) if extra else None)
+            else:
+                extra = {k: r[k] for k in ("at", "kind", "company", "adv") if r.get(k) is not None}
+                vals = (r["addr"], r.get("name", ""), None, None, json.dumps(extra))
             self.db.execute(
                 "INSERT INTO entries(session_id,scan_id,captured_at,kind,rssi,"
                 "identifier,name,channel,security,extra) VALUES(?,?,?,?,?,?,?,?,?,?)",

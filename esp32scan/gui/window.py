@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
                                QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from .. import DEFAULT_DB
+from ..decode import ble_details
 from ..link import list_ports
 from ..protocol import MODE_LABELS
 from .models import BLE_COLS, WIFI_COLS, DeviceFilter, DeviceModel
@@ -23,7 +24,7 @@ TOP_N = 6  # devices charted when nothing is selected
 class DevicePane(QWidget):
     """Filter bar + sortable table + chart tabs for one kind of device."""
 
-    def __init__(self, model, sort_col, charts):
+    def __init__(self, model, charts):
         super().__init__()
         self.model = model
         self.proxy = DeviceFilter(model)
@@ -43,7 +44,8 @@ class DevicePane(QWidget):
         self.table = QTableView()
         self.table.setModel(self.proxy)
         self.table.setSortingEnabled(True)
-        self.table.sortByColumn(sort_col, Qt.DescendingOrder)
+        signal_col = next(i for i, c in enumerate(model.cols) if c.rssi)
+        self.table.sortByColumn(signal_col, Qt.DescendingOrder)
         self.table.setSelectionBehavior(QTableView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().hide()
@@ -111,10 +113,14 @@ class MainWindow(QMainWindow):
         self.wifi_history = SignalHistory(lambda r: r.d.get("ssid") or r.d["bssid"])
         self.ble_history = SignalHistory(lambda r: r.d.get("name") or r.d["addr"])
 
-        self.wifi = DevicePane(self.wifi_model, 4,
+        self.wifi = DevicePane(self.wifi_model,
                                [("Channels", self.channel_map),
                                 ("Signal history", self.wifi_history)])
-        self.ble = DevicePane(self.ble_model, 3, [("Signal history", self.ble_history)])
+        self.ble_details = QPlainTextEdit(readOnly=True)
+        self.ble_details.setStyleSheet("font-family: monospace;")
+        self.ble_details.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.ble = DevicePane(self.ble_model, [("Signal history", self.ble_history),
+                                                  ("Details", self.ble_details)])
         for pane in (self.wifi, self.ble):
             pane.table.selectionModel().selectionChanged.connect(self.refresh_charts)
             pane.proxy.rowsInserted.connect(pane.update_count)
@@ -357,6 +363,16 @@ class MainWindow(QMainWindow):
             self.wifi_history.show_records(self.wifi.chart_records())
         elif self.tabs.currentWidget() is self.ble:
             self.ble_history.show_records(self.ble.chart_records())
+            sel = self.ble.selected()
+            if sel:
+                r = sel[0]
+                self.ble_details.setPlainText(
+                    ble_details(r.d)
+                    + f"\n\nSignal {r.rssi} dBm (best {r.best}), seen in {r.seen} scans, "
+                      f"first {datetime.fromtimestamp(r.first):%H:%M:%S}, "
+                      f"last {datetime.fromtimestamp(r.last):%H:%M:%S}")
+            else:
+                self.ble_details.setPlainText("Select a device to see everything it advertises.")
 
     def update_tab_titles(self):
         self.tabs.setTabText(0, f"WiFi ({len(self.wifi_model.current())})")

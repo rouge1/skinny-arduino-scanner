@@ -7,7 +7,7 @@ from datetime import datetime
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
 from PySide6.QtGui import QColor
 
-from ..protocol import vendor_name
+from ..decode import KIND_HELP, ble_notes, maker, services_text
 
 HISTORY_LEN = 720  # RSSI samples kept per device (~2 h of 10 s cycles)
 SORT_ROLE = Qt.UserRole
@@ -29,9 +29,15 @@ class Record:
         self.history = deque(maxlen=HISTORY_LEN)
 
     def update(self, d, now, scan):
-        # Keep a name we learned earlier if this advertisement didn't carry one.
-        if not d.get("name") and self.d.get("name"):
-            d = dict(d, name=self.d["name"])
+        # Advertisements alternate (e.g. with and without a scan response), so
+        # keep what earlier ones told us: the name, and any decoded fields.
+        if self.d is not d:
+            if not d.get("name") and self.d.get("name"):
+                d = dict(d, name=self.d["name"])
+            if "info" in d:
+                d["info"] = {**self.d.get("info", {}), **d["info"]}
+                if not d.get("company") and self.d.get("company"):
+                    d["company"] = self.d["company"]
         self.d = d
         self.rssi = d["rssi"]
         self.best = max(self.best, d["rssi"])
@@ -56,8 +62,9 @@ def _clock(t):
 
 class Col:
     def __init__(self, title, text, sort=None, align=Qt.AlignLeft, rssi=False,
-                 width=80, stretch=False):
+                 width=80, stretch=False, tip=None):
         self.title = title
+        self.tip = tip
         self.width = width
         self.stretch = stretch
         self.text = text
@@ -72,6 +79,7 @@ WIFI_COLS = [
     Col("SSID", lambda r: r.d.get("ssid") or "(hidden)",
         sort=lambda r: (r.d.get("ssid") or "\uffff").lower(), width=220, stretch=True),
     Col("BSSID", lambda r: r.d["bssid"], width=150),
+    Col("Vendor", lambda r: r.d.get("vendor", ""), width=160),
     Col("Ch", lambda r: str(r.d.get("ch", "")), sort=lambda r: r.d.get("ch", 0),
         align=NUM, width=50),
     Col("Security", lambda r: r.d.get("sec", ""), width=90),
@@ -83,18 +91,21 @@ WIFI_COLS = [
 ]
 
 BLE_COLS = [
-    Col("Address", lambda r: r.d["addr"], width=150),
+    Col("Address", lambda r: r.d["addr"], width=140),
+    Col("Type", lambda r: r.d.get("kind", ""), width=65,
+        tip=lambda r: KIND_HELP.get(r.d.get("kind"))),
     Col("Name", lambda r: r.d.get("name", ""),
-        sort=lambda r: (r.d.get("name") or "\uffff").lower(), width=200, stretch=True),
-    Col("Vendor", lambda r: vendor_name(r.d.get("mfr")), width=130),
+        sort=lambda r: (r.d.get("name") or "\uffff").lower(), width=170),
+    Col("Maker", lambda r: maker(r.d), width=170),
     Col("Signal", lambda r: f"{r.rssi} dBm", sort=lambda r: r.rssi, rssi=True, width=150),
-    Col("Best", lambda r: str(r.best), sort=lambda r: r.best, align=NUM),
-    Col("TX", lambda r: str(r.d["tx"]) if "tx" in r.d else "",
-        sort=lambda r: r.d.get("tx", -999), align=NUM, width=50),
-    Col("Service UUID", lambda r: r.d.get("uuid", ""), width=280),
-    Col("Seen", lambda r: str(r.seen), sort=lambda r: r.seen, align=NUM),
-    Col("Last seen", lambda r: _age(r.last), sort=lambda r: r.last, width=90),
-    Col("First seen", lambda r: _clock(r.first), sort=lambda r: r.first, width=90),
+    Col("Best", lambda r: str(r.best), sort=lambda r: r.best, align=NUM, width=55),
+    Col("TX", lambda r: str(r.d["info"]["tx_power"]) if "tx_power" in r.d.get("info", {}) else "",
+        sort=lambda r: r.d.get("info", {}).get("tx_power", -999), align=NUM, width=45),
+    Col("Seen", lambda r: str(r.seen), sort=lambda r: r.seen, align=NUM, width=50),
+    Col("Last seen", lambda r: _age(r.last), sort=lambda r: r.last, width=80),
+    Col("First seen", lambda r: _clock(r.first), sort=lambda r: r.first, width=80),
+    Col("Services", lambda r: services_text(r.d.get("info", {})), width=200),
+    Col("Info", lambda r: ble_notes(r.d.get("info", {})), width=300, stretch=True),
 ]
 
 
@@ -135,8 +146,13 @@ class DeviceModel(QAbstractTableModel):
             return int(c.align)
         if role == Qt.ForegroundRole and r.scan != self.scan:
             return QColor(128, 128, 128)
-        if role == Qt.ToolTipRole and r.scan != self.scan:
-            return "Not seen in the latest scan"
+        if role == Qt.ToolTipRole:
+            if r.scan != self.scan:
+                return "Not seen in the latest scan"
+            if c.tip:
+                return c.tip(r)
+            text = c.text(r)
+            return text if len(text) > 30 else None
         return None
 
     def apply_scan(self, index, rows):
