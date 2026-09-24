@@ -170,9 +170,34 @@ out, the LED stops blipping.
    scans that ran entirely inside the capture count, and a WiFi + Bluetooth
    cycle takes about 8.5 s, so 30 s gives about 3 of each. A capture with no
    complete scan is rejected.
-3. The stop turns green and the map updates. Clicking a stop (on the map or
-   in the list) makes it the next one to capture, which is how you redo one.
-   **Start / stop capture** and **Skip stop** do the same as the button.
+3. The stop turns green and the map updates. Selecting a stop in the list
+   (or clicking one on the map that isn't captured yet) makes it the next one
+   to capture, which is how you redo one. **Start / stop capture** and
+   **Skip stop** do the same as the button.
+
+**Clicking the map** anywhere near a captured stop opens a **Devices** window
+listing every WiFi network and Bluetooth device heard there: average and best
+signal, how many of the stop's scans heard it, maker, channel/security (WiFi),
+address type, services and decoded info (Bluetooth). **WiFi** / **Bluetooth**
+checkboxes and a text filter narrow the list. The window stays open and
+follows your clicks.
+
+To work out **what is in a particular room**:
+- **Min signal** hides anything weaker than the threshold at this stop.
+  Roughly, −60 dBm or better is usually the same room and −80 or worse is far
+  away, but transmit power varies a lot (a phone vs. a beacon vs. an AP).
+- **Only loudest here** keeps only devices whose strongest reading over the
+  whole walk was at this stop. The **Loudest at** column shows that stop for
+  every device. This is the better test, because a device heard at −70 here
+  but −55 next door is next door.
+- Together (e.g. loudest here and ≥ −70 dBm) they give a short list of likely
+  in-room devices. It's room-level at best: bodies, walls and orientation
+  shift RSSI by 5–10 dB, and phones' RPA addresses rotate about every 15 min.
+
+The number beside each stop on the map is the current layer's value there: a
+signal in dBm, or for the "heard" layers the **average count per scan**.
+That's lower than the total in the Devices window, because not every device
+is caught in every scan.
 
 The first capture starts a new survey. Earlier surveys can be picked from the
 drop-down to view or continue.

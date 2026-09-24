@@ -21,7 +21,8 @@ from pathlib import Path
 import numpy as np
 
 from . import PROJECT_ROOT
-from .decode import enrich, maker
+from . import addata
+from .decode import ble_notes, enrich, maker, services_text
 from .protocol import parse_line
 
 SCHEMA = """
@@ -336,6 +337,60 @@ def _label(layer, r):
     extra = r["extra"]
     who = r["name"] or extra.get("maker") or "(unnamed)"
     return f"{who}  {r['identifier']}  {extra.get('kind') or ''}".rstrip()
+
+
+# ---- what a stop heard -----------------------------------------------------
+
+def stop_devices(point):
+    """Every network/device heard at a stop, one dict per identifier:
+    kind ("wifi"/"ble"), identifier, name, maker (OUI vendor for WiFi), rssi
+    (average over the scans that heard it), best, heard (scans that heard it),
+    scans (scans of that kind at the stop), plus channel/security for WiFi and
+    addr_kind/services/info (decoded from the strongest advertisement) for BLE."""
+    n_scans = {"wifi": point.count("wifi"), "ble": point.count("ble")}
+    acc = {}
+    for s in point.scans:
+        for r in s.readings:
+            key = (s.kind, r["identifier"])
+            a = acc.setdefault(key, {"kind": s.kind, "values": [], "best": None, "name": ""})
+            a["values"].append(r["rssi"])
+            if a["best"] is None or r["rssi"] > a["best"]["rssi"]:
+                a["best"] = r
+            if r["name"]:
+                a["name"] = r["name"]
+    out = []
+    for (kind, ident), a in acc.items():
+        r, extra = a["best"], a["best"]["extra"]
+        d = {"kind": kind, "identifier": ident, "name": a["name"],
+             "rssi": float(np.mean(a["values"])), "best": max(a["values"]),
+             "heard": len(a["values"]), "scans": n_scans[kind]}
+        if kind == "wifi":
+            d.update(maker=extra.get("vendor", ""), channel=r["channel"],
+                     security=r["security"] or "", addr_kind="", services="", info="")
+        else:
+            info = addata.summary(addata.parse(bytes.fromhex(extra.get("adv", "")))[0])
+            d.update(maker=extra.get("maker", ""), channel=None, security="",
+                     addr_kind=extra.get("kind") or "", services=services_text(info),
+                     info=ble_notes(info))
+        out.append(d)
+    out.sort(key=lambda d: -d["rssi"])
+    return out
+
+
+def loudest_stops(points):
+    """{(kind, identifier): (stop, average rssi)} for the stop where each
+    network/device was strongest over the whole survey. A device is most
+    likely nearest the stop where it was loudest (RPA addresses rotate about
+    every 15 min, so a phone can show up under two addresses on a long walk)."""
+    out = {}
+    for stop, p in points.items():
+        if p.status != "done":
+            continue
+        for d in stop_devices(p):
+            key = (d["kind"], d["identifier"])
+            if key not in out or d["rssi"] > out[key][1]:
+                out[key] = (stop, d["rssi"])
+    return out
 
 
 # ---- interpolation ---------------------------------------------------------

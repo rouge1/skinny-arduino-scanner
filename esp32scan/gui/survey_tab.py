@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QFormLayout, QGroupBox,
 
 from .. import PROJECT_ROOT
 from .. import survey as sv
+from .stop_devices import StopDevicesWindow
 
 DONE = QColor("#3fb950")
 SKIPPED = QColor("#6e7681")
@@ -24,7 +25,7 @@ CAPTURING = QColor("#f85149")
 class FloorPlan(QWidget):
     """The floor plan image with the heat overlay, stops and their values."""
 
-    stop_clicked = Signal(int)
+    clicked = Signal(float, float, object)  # image x, y, stop circle hit (or None)
 
     def __init__(self):
         super().__init__()
@@ -37,6 +38,7 @@ class FloorPlan(QWidget):
         self.values = {}          # stop -> float
         self.unit = ""
         self.current = None
+        self.inspected = None     # stop whose devices are shown
         self.capturing = False
         self._pulse = 0
         self._timer = QTimer(self, interval=120)
@@ -98,6 +100,10 @@ class FloorPlan(QWidget):
                 p.setPen(QPen(color, 3))
                 p.setBrush(Qt.NoBrush)
                 p.drawEllipse(c, r + 4 + grow, r + 4 + grow)
+            if i == self.inspected:
+                p.setPen(QPen(QColor("white"), 3))
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(c, r + 5, r + 5)
             fill = DONE if st == "done" else SKIPPED if st == "skipped" else QColor("#1f6feb")
             p.setPen(QPen(QColor("white"), 1.5))
             p.setBrush(fill)
@@ -122,13 +128,14 @@ class FloorPlan(QWidget):
         return None
 
     def mousePressEvent(self, e):
-        i = self._stop_at(e.position())
-        if i is not None:
-            self.stop_clicked.emit(i)
+        if not self.pixmap:
+            return
+        s, ox, oy = self._geometry()
+        pos = e.position()
+        self.clicked.emit((pos.x() - ox) / s, (pos.y() - oy) / s, self._stop_at(pos))
 
     def mouseMoveEvent(self, e):
-        i = self._stop_at(e.position())
-        self.setCursor(Qt.PointingHandCursor if i is not None else Qt.ArrowCursor)
+        self.setCursor(Qt.PointingHandCursor if self.pixmap else Qt.ArrowCursor)
 
 
 class Legend(QWidget):
@@ -174,7 +181,10 @@ class SurveyTab(QWidget):
         self.board_log = None  # (stops, bytes) stored on the board, from its hello
 
         self.plan = FloorPlan()
-        self.plan.stop_clicked.connect(self.select_stop)
+        self.plan.setToolTip("Click anywhere to list the devices heard at the nearest "
+                             "captured stop")
+        self.plan.clicked.connect(self.plan_clicked)
+        self.devices_win = None
 
         # --- survey controls
         self.route_label = QLabel()
@@ -211,7 +221,7 @@ class SurveyTab(QWidget):
         sl.addLayout(top)
         sl.addWidget(self.survey_box)
         sl.addWidget(self.status)
-        sl.addWidget(QLabel("Stops (click one to capture it next):"))
+        sl.addWidget(QLabel("Stops (select one to capture it next):"))
         sl.addWidget(self.stop_list, 1)
         sl.addLayout(btns)
         sl.addWidget(self.import_btn)
@@ -271,6 +281,9 @@ class SurveyTab(QWidget):
         self.plan.set_plan(route["floorplan"])
         self.plan.stops = [(s["name"], s["x"], s["y"]) for s in route["stops"]]
         self.current = self._next_open(0)
+        self.plan.inspected = None
+        if self.devices_win:
+            self.devices_win.hide()
         self._fill_surveys()
         self.refresh_all()
 
@@ -315,6 +328,41 @@ class SurveyTab(QWidget):
             self.current = i
             self.message = ""
         self.refresh_all(heat=False)
+
+    NEAREST_PX = 250  # how far from a captured stop a click still picks it
+
+    def plan_clicked(self, x, y, hit):
+        """A stop that hasn't been captured becomes the next to capture; any other
+        click shows the devices heard at the nearest captured stop."""
+        if hit is not None and (hit not in self.points or self.points[hit].status != "done"):
+            self.select_stop(hit)
+            return
+        done = [p for p in self.points.values() if p.status == "done"]
+        if not done:
+            return
+        p = min(done, key=lambda p: (p.x - x) ** 2 + (p.y - y) ** 2)
+        if hit is None and (p.x - x) ** 2 + (p.y - y) ** 2 > self.NEAREST_PX ** 2:
+            return
+        self.show_devices(p.stop)
+
+    def show_devices(self, stop):
+        if self.devices_win is None:
+            self.devices_win = StopDevicesWindow(self)
+            self.devices_win.finished.connect(self._devices_closed)
+        p = self.points[stop]
+        loudest = sv.loudest_stops(self.points)
+        devices = sv.stop_devices(p)
+        for d in devices:
+            where = loudest.get((d["kind"], d["identifier"]), (stop, 0))[0]
+            d["loudest"] = where
+            d["loudest_name"] = f"{where + 1}. {self.points[where].name}"
+        self.devices_win.show_stop(stop + 1, p, devices)
+        self.plan.inspected = stop
+        self.plan.update()
+
+    def _devices_closed(self):
+        self.plan.inspected = None
+        self.plan.update()
 
     def _list_row(self, row):
         if row >= 0 and row != self.current and not self.mark:
@@ -518,7 +566,8 @@ class SurveyTab(QWidget):
                     f"<small>{nw} WiFi + {nb} Bluetooth scans so far. "
                     f"Press BOOT to stop.</small>")
         elif self.current is None:
-            html = "✓ Survey complete. Click a stop to redo it."
+            html = ("✓ Survey complete. Click the map to see what was heard there; "
+                    "pick a stop in the list to redo it.")
         else:
             s = self.route["stops"][self.current]
             html = (f"Next: <b>{s['name']}</b> ({self.current + 1}/{len(self.route['stops'])})"
