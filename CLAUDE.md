@@ -43,6 +43,13 @@ pollute `data/captures.db`.
 - `esp32scan/store.py` holds the SQLite log shared by GUI and CLI. Schema
   changes go through the `PRAGMA table_info` migration in `Store.__init__`.
   Don't break the existing tables.
+- Survey / heat map: `esp32scan/survey.py` has no Qt (routes, `SurveyStore`
+  tables, `point_value`, `idw_grid`, `colorize`). `gui/survey_tab.py` is the
+  controller. It owns its own sqlite connection on the GUI thread, gets
+  `button`/`hello` events and scans from `MainWindow`, and assigns a scan to
+  the capture when `mark.t0 <= scan.t0` and `scan.t1 <= stop.t`, all in board
+  `millis()`. Keep that comparison in board time: PC receive times lag by up
+  to a scan plus printing.
 - `esp32scan/gui/`: `worker.py` (QThread that owns the serial port *and* the
   DB connection, so all serial writes go through its command queue),
   `models.py` (append-only `DeviceModel` + `DeviceFilter` proxy; rows are
@@ -63,6 +70,16 @@ pollute `data/captures.db`.
   text mode, and commands sent during boot are lost; `Link` handles that by
   re-handshaking on the boot banner. Probe scripts that write immediately
   after opening will miss it, so use `Link`. Only one process can hold the port.
+- **BOOT button (GPIO0)** is polled by `buttonTask` (a press counts on
+  release, and a hold of 1 s fires the skip). GPIO0 is also wired to the
+  CP2102 auto-reset circuit, so the host must keep DTR/RTS low (`Link` does)
+  or the button reads as pressed.
+- Firmware output comes from two tasks (main loop + button). Every print
+  function takes the recursive `OutLock`; new output must too, or lines
+  interleave.
+- To test surveys without pressing the button, send `m` / `k` over serial.
+  They're handled between scans, so they lag the physical button by up to
+  one scan.
 - **Serial is 460800 baud** (`Serial.begin` and `link.BAUD` must match). The
   boot ROM prints at 115200 regardless, and `Link` replaces that garbage with
   a placeholder line.

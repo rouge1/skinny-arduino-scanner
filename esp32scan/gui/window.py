@@ -15,6 +15,7 @@ from .. import DEFAULT_DB
 from ..decode import ble_details
 from ..link import list_ports
 from ..protocol import MODE_LABELS
+from .survey_tab import SurveyTab
 from .models import BLE_COLS, WIFI_COLS, DeviceFilter, DeviceModel
 from .widgets import ChannelMap, RssiDelegate, SignalHistory
 
@@ -140,9 +141,12 @@ class MainWindow(QMainWindow):
         cl.addWidget(self.console, 1)
         cl.addWidget(self.console_in)
 
+        self.survey = SurveyTab(str(db_path), self.send_board)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self.wifi, "WiFi")
         self.tabs.addTab(self.ble, "Bluetooth")
+        self.tabs.addTab(self.survey, "Survey")
         self.tabs.addTab(console_w, "Console")
         self.tabs.currentChanged.connect(self.refresh_charts)
         self.setCentralWidget(self.tabs)
@@ -270,12 +274,20 @@ class MainWindow(QMainWindow):
 
     def on_worker_finished(self):
         self.worker = None
+        self.survey.set_connected(False)
         self.connect_btn.setChecked(False)
         self.connect_btn.setText("Connect")
         self.port_box.setEnabled(True)
         self.activity.setText("")
 
+    def send_board(self, data):
+        if not self.worker:
+            return False
+        self.worker.send_raw(data)
+        return True
+
     def on_status(self, msg, connected):
+        self.survey.set_connected(connected)
         self.conn_label.setText(("● " if connected else "○ ") + msg)
         self.log(f"[gui] {msg}")
 
@@ -289,6 +301,10 @@ class MainWindow(QMainWindow):
 
     def on_event(self, ev):
         kind = ev["ev"]
+        if kind in ("button", "hello"):
+            self.survey.on_event(ev)
+        if kind == "button":
+            self.log(f"[board] BOOT: {ev['action']} (mark {ev.get('mark')})")
         if kind == "scan_start":
             what = "WiFi" if ev["kind"] == "wifi" else "Bluetooth"
             self.activity.setText(f"Scanning {what}… (#{ev['scan']})")
@@ -301,6 +317,7 @@ class MainWindow(QMainWindow):
                      f"mode {ev.get('mode')}")
 
     def on_scan(self, kind, index, rows, done):
+        self.survey.on_scan(kind, index, rows, done)
         model = self.wifi_model if kind == "wifi" else self.ble_model
         model.apply_scan(index, rows)
         pane = self.wifi if kind == "wifi" else self.ble

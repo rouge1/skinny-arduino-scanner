@@ -1,0 +1,17 @@
+{
+  "name": "UAH floor 1",
+  "floorplan": "knowledge/IMG_1698.jpg",
+  "note": "x/y are pixel positions on the floor plan image (1258x637).",
+  "stops": [
+    {"name": "Meeting 106", "x": 268, "y": 250},
+    {"name": "Meeting 104", "x": 268, "y": 360},
+    {"name": "Gathering",   "x": 480, "y": 300},
+    {"name": "Lobby",       "x": 420, "y": 440},
+    {"name": "100",         "x": 532, "y": 505},
+    {"name": "120",         "x": 736, "y": 338},
+    {"name": "121",         "x": 852, "y": 336},
+    {"name": "122",         "x": 973, "y": 320},
+    {"name": "124",         "x": 1083, "y": 352},
+    {"name": "130",         "x": 948, "y": 515}
+  ]
+}

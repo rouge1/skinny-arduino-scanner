@@ -11,22 +11,46 @@
 //   b = Bluetooth only   w = WiFi only   x = both   s = stop scanning
 //   j = JSON-lines output (used by the desktop GUI)   t = text tables (default)
 //   ? = print a status/hello line
+//   m = same as a short BOOT press   k = same as a long BOOT press
+//
+// Survey marks: a short press of the BOOT button starts a capture at the
+// current spot, the next short press stops it; a long press (>= 1 s) skips
+// the spot (and cancels a capture in progress). The LED is solid while a
+// capture runs and flashes three times on a skip. Events carry the board's
+// millis() ("t", scan "t0"/"t1") so the host can match scans to captures
+// exactly, whatever the serial latency.
 
-static const uint32_t PHASE_MS = 5000;
 static const uint32_t BLE_SCAN_SECONDS = 5;
 static const int LED_PIN = 2;
-static const int FW_VERSION = 3;
+static const int BUTTON_PIN = 0;  // BOOT; only a strapping pin during reset
+static const uint32_t LONG_PRESS_MS = 1000;
+static const int FW_VERSION = 4;
 static const size_t MAX_BLE_DEVICES = 256;  // cap per scan so a crowded area can't exhaust the heap
 
 enum Mode { MODE_BT, MODE_WIFI, MODE_BOTH, MODE_IDLE };
 static Mode g_mode = MODE_BOTH;
 static bool g_json = false;
 static volatile bool g_scanning = false;
+static volatile bool g_marking = false;
+static volatile int g_flash = 0;  // LED toggles left to show a skip
+static uint32_t g_markCount = 0;
+
+// Serial output comes from the main loop and the button task; each print
+// function holds this (recursive) lock so lines never interleave.
+static SemaphoreHandle_t g_out;
+struct OutLock {
+  OutLock() { xSemaphoreTakeRecursive(g_out, portMAX_DELAY); }
+  ~OutLock() { xSemaphoreGiveRecursive(g_out); }
+};
 
 static void ledTask(void *) {
   pinMode(LED_PIN, OUTPUT);
   for (;;) {
-    if (g_scanning) {
+    if (g_flash > 0) {
+      digitalWrite(LED_PIN, g_flash-- % 2);
+    } else if (g_marking) {
+      digitalWrite(LED_PIN, HIGH);
+    } else if (g_scanning) {
       digitalWrite(LED_PIN, !digitalRead(LED_PIN));
     } else {
       digitalWrite(LED_PIN, LOW);
@@ -138,17 +162,70 @@ static void jsonStr(const String &s) {
 }
 
 static void printHello() {
+  OutLock lock;
   if (g_json) {
-    Serial.printf("{\"ev\":\"hello\",\"fw\":\"esp32-ai\",\"ver\":%d,\"mode\":\"%s\",\"mac\":",
-                  FW_VERSION, modeKey(g_mode));
+    Serial.printf("{\"ev\":\"hello\",\"fw\":\"esp32-ai\",\"ver\":%d,\"mode\":\"%s\","
+                  "\"marking\":%s,\"t\":%lu,\"mac\":",
+                  FW_VERSION, modeKey(g_mode), g_marking ? "true" : "false",
+                  (unsigned long)millis());
     jsonStr(WiFi.macAddress());
     Serial.println("}");
   } else {
-    Serial.printf("\n[status] esp32-ai v%d  mode=%s\n", FW_VERSION, modeLabel(g_mode));
+    Serial.printf("\n[status] esp32-ai v%d  mode=%s%s\n", FW_VERSION, modeLabel(g_mode),
+                  g_marking ? "  (capturing)" : "");
+  }
+}
+
+// action: "start" / "stop" / "skip"; t: millis() of the press.
+static void printButton(const char *action, uint32_t t) {
+  OutLock lock;
+  if (g_json) {
+    Serial.printf("{\"ev\":\"button\",\"action\":\"%s\",\"mark\":%lu,\"t\":%lu}\n",
+                  action, (unsigned long)g_markCount, (unsigned long)t);
+  } else {
+    Serial.printf("\n[button] %s (mark %lu)\n", action, (unsigned long)g_markCount);
+  }
+}
+
+static void shortPress(uint32_t t) {
+  g_marking = !g_marking;
+  if (g_marking) g_markCount++;
+  printButton(g_marking ? "start" : "stop", t);
+}
+
+static void longPress(uint32_t t) {
+  g_marking = false;
+  g_flash = 6;
+  printButton("skip", t);
+}
+
+// Polls BOOT (active low). A press counts on release (so a long press never
+// toggles first); a hold of LONG_PRESS_MS fires the skip while still held.
+static void buttonTask(void *) {
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  bool down = false, longFired = false;
+  uint32_t tDown = 0, tUp = 0;
+  for (;;) {
+    bool pressed = digitalRead(BUTTON_PIN) == LOW;
+    uint32_t now = millis();
+    if (pressed && !down && now - tUp > 80) {  // ignore release bounce
+      down = true;
+      longFired = false;
+      tDown = now;
+    } else if (pressed && down && !longFired && now - tDown >= LONG_PRESS_MS) {
+      longFired = true;
+      longPress(tDown);
+    } else if (!pressed && down) {
+      down = false;
+      tUp = now;
+      if (!longFired && now - tDown >= 30) shortPress(tDown);
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
 static void printMode() {
+  OutLock lock;
   if (g_json) {
     Serial.printf("{\"ev\":\"mode\",\"mode\":\"%s\"}\n", modeKey(g_mode));
   } else {
@@ -168,6 +245,8 @@ void handleSerial() {
       case 'j': g_json = true; printHello(); continue;
       case 't': g_json = false; printHello(); continue;
       case '?': printHello(); continue;
+      case 'm': shortPress(millis()); continue;
+      case 'k': longPress(millis()); continue;
       default: continue;
     }
     if (m != g_mode) {
@@ -178,17 +257,19 @@ void handleSerial() {
 }
 
 static void printScanStart(const char *kind, uint32_t n) {
+  OutLock lock;
   if (g_json) {
     Serial.printf("{\"ev\":\"scan_start\",\"kind\":\"%s\",\"scan\":%lu}\n", kind,
                   (unsigned long)n);
   }
 }
 
-static void printScanDone(const char *kind, uint32_t n, size_t count, uint32_t ms) {
+// t0/t1: millis() when the scan started and finished (before printing).
+static void printScanDone(const char *kind, uint32_t n, size_t count, uint32_t t0, uint32_t t1) {
   Serial.printf("{\"ev\":\"scan_done\",\"kind\":\"%s\",\"scan\":%lu,\"count\":%u,\"ms\":%lu,"
-                "\"heap\":%lu}\n",
-                kind, (unsigned long)n, (unsigned)count, (unsigned long)ms,
-                (unsigned long)ESP.getFreeHeap());
+                "\"t0\":%lu,\"t1\":%lu,\"heap\":%lu}\n",
+                kind, (unsigned long)n, (unsigned)count, (unsigned long)(t1 - t0),
+                (unsigned long)t0, (unsigned long)t1, (unsigned long)ESP.getFreeHeap());
 }
 
 static void fmtAddr(const uint8_t *a, char *out) {
@@ -213,10 +294,11 @@ static size_t findName(const uint8_t *p, size_t len, const char **name) {
   return best;
 }
 
-void printBt(uint32_t n, uint32_t ms) {
+void printBt(uint32_t n, uint32_t t0, uint32_t t1) {
   std::sort(g_bt.begin(), g_bt.end(),
             [](const Found &a, const Found &b) { return a.rssi > b.rssi; });
   char addr[18];
+  OutLock lock;
 
   if (g_json) {
     for (auto &f : g_bt) {
@@ -226,7 +308,7 @@ void printBt(uint32_t n, uint32_t ms) {
       for (size_t i = 0; i < f.len; i++) Serial.printf("%02x", f.payload[i]);
       Serial.println("\"}");
     }
-    printScanDone("ble", n, g_bt.size(), ms);
+    printScanDone("ble", n, g_bt.size(), t0, t1);
     return;
   }
 
@@ -246,9 +328,10 @@ void printBt(uint32_t n, uint32_t ms) {
   Serial.println();
 }
 
-void printWifi(uint32_t n, uint32_t ms) {
+void printWifi(uint32_t n, uint32_t t0, uint32_t t1) {
   std::sort(g_wifi.begin(), g_wifi.end(),
             [](const Net &a, const Net &b) { return a.rssi > b.rssi; });
+  OutLock lock;
 
   if (g_json) {
     for (auto &w : g_wifi) {
@@ -258,7 +341,7 @@ void printWifi(uint32_t n, uint32_t ms) {
       jsonStr(w.ssid);
       Serial.println("}");
     }
-    printScanDone("wifi", n, g_wifi.size(), ms);
+    printScanDone("wifi", n, g_wifi.size(), t0, t1);
     return;
   }
 
@@ -294,7 +377,7 @@ void doWifiScan(uint32_t n) {
   }
   WiFi.scanDelete();
   g_scanning = false;
-  printWifi(n, millis() - t);
+  printWifi(n, t, millis());
 }
 
 void doBleScan(uint32_t n) {
@@ -306,15 +389,17 @@ void doBleScan(uint32_t n) {
   scan->start(BLE_SCAN_SECONDS, false);
   scan->clearResults();
   g_scanning = false;
-  printBt(n, millis() - t);
+  printBt(n, t, millis());
 }
 
 void setup() {
+  g_out = xSemaphoreCreateRecursiveMutex();
   Serial.begin(460800);
   delay(500);
   Serial.println();
   Serial.println("ESP32 Collector - WiFi + Bluetooth scanner");
   Serial.println("Send: b=bluetooth  w=wifi  x=both (default)  s=stop  j=json  t=text");
+  Serial.println("BOOT button: press = start/stop capture, hold 1 s = skip spot");
 
   g_bt.reserve(MAX_BLE_DEVICES);
 
@@ -332,13 +417,7 @@ void setup() {
   delay(100);
 
   xTaskCreatePinnedToCore(ledTask, "led", 2048, NULL, 1, NULL, 1);
-}
-
-void waitPhase(uint32_t startMs) {
-  while (millis() - startMs < PHASE_MS) {
-    handleSerial();
-    delay(20);
-  }
+  xTaskCreatePinnedToCore(buttonTask, "button", 3072, NULL, 2, NULL, 1);
 }
 
 void loop() {
@@ -347,18 +426,16 @@ void loop() {
 
   handleSerial();
 
+  // Scans run back to back (no idle padding) so a short survey capture
+  // still gets several of each.
   if (g_mode == MODE_IDLE) {
     delay(20);
   } else if (g_mode == MODE_WIFI) {
-    uint32_t t = millis();
     doWifiScan(++wifiCount);
-    waitPhase(t);
   } else if (g_mode == MODE_BT) {
     doBleScan(++btCount);
   } else {
-    uint32_t t = millis();
     doWifiScan(++wifiCount);
-    waitPhase(t);
     handleSerial();
     if (g_mode == MODE_BOTH) doBleScan(++btCount);
   }

@@ -56,6 +56,8 @@ class Link:
         self._rows = {"wifi": [], "ble": []}
         self._last_json = 0.0
         self._last_hello_req = 0.0
+        self._offset = None   # PC time - board time (s); see board_to_wall()
+        self._last_board_t = 0
 
     def open(self):
         self.ser.open()
@@ -101,6 +103,21 @@ class Link:
             self.handshake()
         return out
 
+    def _track_clock(self, board_ms):
+        """Serial delay only ever makes (PC receive time - board time) larger,
+        so the smallest value seen is the best estimate of the offset. The
+        board's millis() restarts when it reboots; start over then."""
+        if board_ms < self._last_board_t:
+            self._offset = None
+        self._last_board_t = board_ms
+        off = time.time() - board_ms / 1000
+        if self._offset is None or off < self._offset:
+            self._offset = off
+
+    def board_to_wall(self, board_ms):
+        """PC wall-clock time (epoch seconds) for a board millis() value."""
+        return None if self._offset is None else self._offset + board_ms / 1000
+
     def _handle(self, line):
         ev = parse_line(line)
         if ev is None:
@@ -116,6 +133,11 @@ class Link:
 
         self._last_json = time.time()
         kind = ev["ev"]
+        for key in ("t", "t1"):
+            if key in ev:
+                self._track_clock(ev[key])
+        if "t" in ev:
+            ev["_wall"] = self.board_to_wall(ev["t"])
         if kind in ("wifi", "ble"):
             ev["_at"] = now_iso()
             self._rows[kind].append(enrich(kind, ev))

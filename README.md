@@ -42,6 +42,8 @@ them live, charts signal strength over time and logs every scan to SQLite.
 - Filter box matches any column. Every column is sortable.
 - Switch between **WiFi / Bluetooth / Both** and **Pause** (Space) while
   connected.
+- **Survey** tab: walk a route through the building and build WiFi and
+  Bluetooth **heat maps** on the floor plan (see below).
 - **Console** tab: raw serial output from the board, plus a box for sending
   commands by hand.
 - **Log to database**: every scan is saved to `data/captures.db`.
@@ -69,9 +71,11 @@ esp32scan/                    Python package shared by GUI and CLI
                                 (vendored from ble-scanner)
   oui.py, ieee/oui.tsv.gz       MAC vendor lookup (IEEE MA-L/MA-M/MA-S)
   store.py                      SQLite capture log
+  survey.py                     survey storage, per-stop values, IDW heat map
   gui/                          PySide6 + pyqtgraph desktop app
 scanner-gui                   GUI launcher
-knowledge/                    board specs + photo
+routes/                       survey routes (floor plan + stop positions)
+knowledge/                    board specs, photo, floor plan
 data/captures.db              capture log (created automatically, git-ignored)
 ```
 
@@ -119,6 +123,49 @@ ESP32_MODE=x ./serial-monitor.py 60 # both modes, stop after 60 s
 Only one program can hold the serial port at a time. Close the GUI before
 running the CLI, and vice versa.
 
+## Heat-map survey
+
+Carry the laptop with the ESP32 plugged in, stop at each spot on a route, and
+use the board's **BOOT** button:
+
+| BOOT | Effect | LED |
+|---|---|---|
+| short press | start capturing at this stop, or stop the capture | solid while capturing |
+| hold ≥ 1 s | skip this stop (cancels a capture in progress) | 3 quick flashes |
+
+**EN is reset. Don't use it during a survey.**
+
+1. Start `./scanner-gui` and open the **Survey** tab. It loads the first route
+   in `routes/`. The panel shows the next stop.
+2. At each stop, press BOOT, wait **20–30 s**, then press BOOT again. Only
+   scans that ran entirely inside the capture count, and a WiFi + Bluetooth
+   cycle takes about 8.5 s, so 30 s gives about 3 of each. A capture with no
+   complete scan is rejected.
+3. The stop turns green and the map updates. Clicking a stop (on the map or
+   in the list) makes it the next one to capture, which is how you redo one.
+   **Start / stop capture** and **Skip stop** do the same as the button.
+
+The first capture starts a new survey. Earlier surveys can be picked from the
+drop-down to view or continue.
+
+**Heat map layers**: coverage of one SSID (strongest AP broadcasting it), the
+strongest signal of any network, one access point (BSSID), one Bluetooth
+device, and the number of APs / Bluetooth devices heard. At each stop a
+signal value is the strongest matching reading per scan, averaged over the
+scans that heard it, or −100 dBm if none did. Between stops the value is
+inverse-distance weighted, and the map fades out beyond **Reach** pixels from
+the nearest stop instead of guessing. Bluetooth devices with RPA addresses
+change address about every 15 minutes, so per-device maps work best for
+public/static addresses.
+
+**Routes** are JSON files in `routes/`: a floor plan image plus stops with
+pixel positions on it.
+
+```json
+{"name": "UAH floor 1", "floorplan": "knowledge/IMG_1698.jpg",
+ "stops": [{"name": "Meeting 106", "x": 268, "y": 250}, ...]}
+```
+
 ## Serial protocol
 
 The host sends single characters:
@@ -129,6 +176,7 @@ The host sends single characters:
 | `s` | stop scanning |
 | `j` / `t` | JSON-lines output / human-readable tables (default after boot) |
 | `?` | print a status (`hello`) line |
+| `m` / `k` | same as a short / long BOOT press |
 
 The port runs at **460800 baud** (for a plain serial monitor:
 `arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=460800`). The ESP32's boot
@@ -142,8 +190,14 @@ In JSON mode, every line is one object with an `ev` field:
 {"ev":"scan_start","kind":"wifi","scan":1}
 {"ev":"wifi","scan":1,"bssid":"8C:30:66:DE:51:20","rssi":-54,"ch":6,"sec":"WPA2/3","ssid":"SkinnyRD"}
 {"ev":"ble","scan":1,"addr":"90:70:69:10:be:e1","at":0,"rssi":-67,"adv":"02010611079eca…0f094c6f526120466f7848756e746572"}
-{"ev":"scan_done","kind":"ble","scan":1,"count":134,"ms":5007,"heap":59052}
+{"ev":"scan_done","kind":"ble","scan":1,"count":134,"ms":5007,"t0":4301,"t1":9308,"heap":49040}
+{"ev":"button","action":"start","mark":1,"t":4298}
 ```
+
+`t`, `t0` and `t1` are the board's `millis()`. The app matches scans to
+captures in board time, so serial delay doesn't matter. It also estimates
+the PC−board clock offset (the smallest `PC receive time − board time` seen)
+to put wall-clock times on captures.
 
 `at` is the ESP32's address type (bit 0 set = random). `adv` is the device's
 longest advertising payload in that scan, as hex. Advertisements that came
@@ -160,6 +214,10 @@ them if no JSON arrives for 12 s, so a board reboot recovers by itself.
 
 - `sessions`: one row per connection (name, mode, port, start/end time)
 - `scans`: one row per completed scan (kind `wifi`/`ble`, index, time, count)
+- `surveys`, `survey_points`, `survey_readings`: heat-map surveys, one row
+  per survey, per captured or skipped stop (redoing a stop replaces it) and
+  per network/device per scan at a stop. They're kept separately from the
+  capture log, so surveys work with "Log to database" off.
 - `entries`: one row per network/device per scan: `rssi`, `identifier`
   (BSSID or BLE address), `name` (SSID or BLE name), `channel`, `security`,
   and `extra` (JSON). For WiFi, `extra` holds the OUI `vendor`. For BLE it
