@@ -1,44 +1,55 @@
 """Window listing every network/device heard at one survey stop."""
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QSlider, QTableView, QVBoxLayout)
+                               QLineEdit, QSlider, QTableView, QToolButton, QVBoxLayout)
 
 from ..decode import KIND_HELP
-from .models import RSSI_ROLE, SORT_ROLE
-from .widgets import RssiDelegate
+from . import theme as T
+from .models import BEST_ROLE, RSSI_ROLE, SORT_ROLE
+from .widgets import SignalDelegate, column_menu
 
 NUM = Qt.AlignRight | Qt.AlignVCenter
 LEFT = Qt.AlignLeft | Qt.AlignVCenter
 
-# title, text(d), sort key(d), alignment, width
+
+def _details(d):
+    if d["kind"] == "wifi":
+        return ", ".join(x for x in (f"Ch {d['channel']}" if d["channel"] else "",
+                                     d["security"]) if x)
+    return d["info"]
+
+
+# title, text(d), sort key(d), alignment, width, style ("" / "muted" / "mono"), hidden
 COLS = [
-    ("Type", lambda d: "WiFi" if d["kind"] == "wifi" else "Bluetooth", None, LEFT, 80),
+    ("Kind", lambda d: "WiFi" if d["kind"] == "wifi" else "BT", None, LEFT, 52, "muted", False),
     ("Name", lambda d: d["name"] or ("(hidden)" if d["kind"] == "wifi" else ""),
-     lambda d: (d["name"] or "￿").lower(), LEFT, 190),
-    ("Address", lambda d: d["identifier"], None, LEFT, 140),
-    ("Maker", lambda d: d["maker"], None, LEFT, 170),
-    ("Signal", lambda d: f"{d['rssi']:.0f} dBm", lambda d: d["rssi"], LEFT, 140),
-    ("Best", lambda d: str(d["best"]), lambda d: d["best"], NUM, 50),
+     lambda d: (d["name"] or "\uffff").lower(), LEFT, 190, "", False),
+    ("Signal (dBm)", lambda d: f"{d['rssi']:.0f}", lambda d: d["rssi"], LEFT, 150, "", False),
     ("Heard", lambda d: f"{d['heard']}/{d['scans']}", lambda d: d["heard"] / max(d["scans"], 1),
-     NUM, 55),
+     NUM, 58, "", False),
     ("Loudest at", lambda d: "here" if d.get("here") else d.get("loudest_name", ""),
-     lambda d: (not d.get("here"), d.get("loudest", 0)), LEFT, 120),
+     lambda d: (not d.get("here"), d.get("loudest", 0)), LEFT, 110, "", False),
+    ("Maker", lambda d: d["maker"], None, LEFT, 170, "muted", False),
+    ("Details", _details, None, LEFT, 220, "", False),
+    ("Address", lambda d: d["identifier"], None, LEFT, 170, "mono", False),
+    ("Best", lambda d: str(d["best"]), lambda d: d["best"], NUM, 50, "", True),
     ("Ch", lambda d: str(d["channel"]) if d["channel"] else "", lambda d: d["channel"] or 0,
-     NUM, 40),
-    ("Security", lambda d: d["security"], None, LEFT, 85),
-    ("Addr type", lambda d: d["addr_kind"], None, LEFT, 75),
-    ("Services", lambda d: d["services"], None, LEFT, 160),
-    ("Info", lambda d: d["info"], None, LEFT, 200),
+     NUM, 40, "", True),
+    ("Security", lambda d: d["security"], None, LEFT, 85, "", True),
+    ("Addr type", lambda d: d["addr_kind"], None, LEFT, 75, "muted", True),
+    ("Services", lambda d: d["services"], None, LEFT, 160, "", True),
 ]
-SIGNAL_COL = 4
+SIGNAL_COL = 2
 
 
 class DeviceTable(QAbstractTableModel):
     def __init__(self):
         super().__init__()
         self.rows = []
+        self.mono = T.mono_font(9)
+        self.tnum = T.tabular(T.ui_font(10.5))
 
     def set_rows(self, rows):
         self.beginResetModel()
@@ -58,25 +69,34 @@ class DeviceTable(QAbstractTableModel):
 
     def data(self, index, role=Qt.DisplayRole):
         d = self.rows[index.row()]
-        title, text, sort, align, _ = COLS[index.column()]
+        title, text, sort, align, _, look, _ = COLS[index.column()]
         if role == Qt.DisplayRole:
             return text(d)
         if role == SORT_ROLE:
             return (sort or text)(d)
         if role == RSSI_ROLE:
             return round(d["rssi"]) if index.column() == SIGNAL_COL else None
+        if role == BEST_ROLE:
+            return d["best"] if index.column() == SIGNAL_COL else None
         if role == Qt.TextAlignmentRole:
             return int(align)
-        if role == Qt.ForegroundRole and title == "Loudest at" and d.get("here"):
-            return QColor("#3fb950")
+        if role == Qt.ForegroundRole:
+            if title == "Loudest at":
+                return QColor(T.ACCENT if d.get("here") else T.MUTED)
+            if look in ("muted", "mono"):
+                return QColor(T.MUTED)
+        if role == Qt.FontRole:
+            return self.mono if look == "mono" else self.tnum if align == NUM else None
         if role == Qt.ToolTipRole:
+            if index.column() == SIGNAL_COL:
+                return f"Average {d['rssi']:.0f} dBm at this stop, best {d['best']} dBm"
             if title == "Addr type":
                 return KIND_HELP.get(d["addr_kind"])
             if title == "Heard":
                 return f"Heard in {d['heard']} of the {d['scans']} scans at this stop"
             if title == "Loudest at":
-                return ("The stop where this was strongest over the whole walk: "
-                        "most likely where it is")
+                return (f"Strongest at stop {d.get('loudest', 0) + 1} over the whole walk, "
+                        "so most likely located there")
             t = text(d)
             return t if len(t) > 25 else None
         return None
@@ -116,71 +136,94 @@ class KindFilter(QSortFilterProxyModel):
         return super().filterAcceptsRow(row, parent)
 
 
+def chip(text, tip):
+    b = QToolButton(text=text, checkable=True, checked=True, toolTip=tip)
+    b.setProperty("chip", True)
+    b.setCursor(Qt.PointingHandCursor)
+    return b
+
+
 class StopDevicesWindow(QDialog):
     """Non-modal; show_stop() replaces the contents on every map click."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Devices at stop")
-        self.resize(1250, 620)
+        self.resize(1180, 640)
         self.model = DeviceTable()
         self.proxy = KindFilter(self.model)
 
-        self.header = QLabel(textFormat=Qt.RichText)
-        self.header.setStyleSheet("font-size: 13pt;")
-        self.wifi_box = QCheckBox("WiFi", checked=True)
-        self.wifi_box.toggled.connect(lambda on: self._kind("wifi", on))
-        self.ble_box = QCheckBox("Bluetooth", checked=True)
-        self.ble_box.toggled.connect(lambda on: self._kind("ble", on))
-        self.filter = QLineEdit(placeholderText="Filter…  (name, address, maker, info)")
+        self.heading = QLabel(objectName="heading")
+        self.sub = QLabel(objectName="subheading")
+
+        self.wifi_chip = chip("WiFi", "Show WiFi networks")
+        self.wifi_chip.toggled.connect(lambda on: self._kind("wifi", on))
+        self.ble_chip = chip("Bluetooth", "Show Bluetooth devices")
+        self.ble_chip.toggled.connect(lambda on: self._kind("ble", on))
+        self.filter = QLineEdit(placeholderText="Search name, address, maker")
         self.filter.setClearButtonEnabled(True)
+        self.filter.setMinimumWidth(220)
         self.filter.textChanged.connect(self._text)
-        self.count = QLabel()
+        QShortcut(QKeySequence.Find, self, activated=self.filter.setFocus)
 
         self.min_rssi = QSlider(Qt.Horizontal, minimum=-100, maximum=-30, value=-100)
-        self.min_rssi.setFixedWidth(220)
+        self.min_rssi.setFixedWidth(150)
         self.min_rssi.setToolTip("Hide anything weaker than this at this stop. Roughly: "
-                                 "-60 or better is usually the same room, -80 or worse far away")
+                                 "−60 or better is usually the same room, −80 or worse far away")
         self.min_rssi.valueChanged.connect(self._min_rssi)
-        self.min_label = QLabel()
-        self.min_label.setMinimumWidth(110)
-        self.only_here = QCheckBox("Only loudest here")
+        self.min_label = QLabel(objectName="fieldLabel")
+        self.min_label.setMinimumWidth(90)
+        self.only_here = QCheckBox("Strongest here only")
         self.only_here.setToolTip("Only devices whose strongest reading on the whole walk "
-                                  "was at this stop, i.e. most likely located here")
+                                  "was at this stop, so most likely located here")
         self.only_here.toggled.connect(self._only_here)
+        self.count = QLabel(objectName="count")
 
         bar = QHBoxLayout()
-        bar.addWidget(self.wifi_box)
-        bar.addWidget(self.ble_box)
-        bar.addWidget(self.filter, 1)
+        bar.setSpacing(10)
+        bar.addWidget(self.wifi_chip)
+        bar.addWidget(self.ble_chip)
+        bar.addSpacing(6)
+        bar.addWidget(self.filter)
+        bar.addSpacing(10)
+        bar.addWidget(QLabel("Min signal", objectName="fieldLabel"))
+        bar.addWidget(self.min_rssi)
+        bar.addWidget(self.min_label)
+        bar.addWidget(self.only_here)
+        bar.addStretch(1)
         bar.addWidget(self.count)
-        bar2 = QHBoxLayout()
-        bar2.addWidget(QLabel("Min signal"))
-        bar2.addWidget(self.min_rssi)
-        bar2.addWidget(self.min_label)
-        bar2.addWidget(self.only_here)
-        bar2.addStretch(1)
 
         self.table = QTableView()
         self.table.setModel(self.proxy)
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(SIGNAL_COL, Qt.DescendingOrder)
         self.table.setSelectionBehavior(QTableView.SelectRows)
-        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
         self.table.verticalHeader().hide()
-        self.table.verticalHeader().setDefaultSectionSize(24)
+        self.table.verticalHeader().setDefaultSectionSize(28)
         self.table.setWordWrap(False)
-        self.table.setItemDelegateForColumn(SIGNAL_COL, RssiDelegate(self.table))
+        self.table.setHorizontalScrollMode(QTableView.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QTableView.ScrollPerPixel)
+        self.table.setItemDelegateForColumn(SIGNAL_COL, SignalDelegate(self.table))
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
+        hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        hdr.setHighlightSections(False)
         hdr.setStretchLastSection(True)
         for i, c in enumerate(COLS):
             self.table.setColumnWidth(i, c[4])
+        column_menu(self.table, "stop_devices", [c[0] for c in COLS if c[6]])
+
+        head = QVBoxLayout()
+        head.setSpacing(2)
+        head.addWidget(self.heading)
+        head.addWidget(self.sub)
 
         lay = QVBoxLayout(self)
-        lay.addWidget(self.header)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(12)
+        lay.addLayout(head)
         lay.addLayout(bar)
-        lay.addLayout(bar2)
         lay.addWidget(self.table, 1)
         self._min_rssi(self.min_rssi.value())
 
@@ -189,7 +232,7 @@ class StopDevicesWindow(QDialog):
         self._update_count()
 
     def _min_rssi(self, v):
-        self.min_label.setText("off (all)" if v <= -100 else f"≥ {v} dBm")
+        self.min_label.setText("off" if v <= -100 else f"{v} dBm or more".replace("-", "−"))
         self.proxy.set_min_rssi(v)
         self._update_count()
 
@@ -204,16 +247,19 @@ class StopDevicesWindow(QDialog):
     def _update_count(self):
         rows = self.model.rows
         nw = sum(1 for d in rows if d["kind"] == "wifi")
-        self.count.setText(f"{nw} WiFi · {len(rows) - nw} Bluetooth · "
-                           f"showing {self.proxy.rowCount()}")
+        self.wifi_chip.setText(f"WiFi  {nw}")
+        self.ble_chip.setText(f"Bluetooth  {len(rows) - nw}")
+        shown = self.proxy.rowCount()
+        self.count.setText(f"{shown} shown" if shown != len(rows) else f"{shown} in total")
 
     def show_stop(self, number, point, devices):
         for d in devices:
             d["here"] = d.get("loudest") == number - 1
         self.setWindowTitle(f"Devices at {point.name}")
-        when = f" · captured {point.started_at[11:19]}" if point.started_at else ""
-        self.header.setText(f"<b>{number}. {point.name}</b> · {point.count('wifi')} WiFi + "
-                            f"{point.count('ble')} Bluetooth scans{when}")
+        self.heading.setText(point.name)
+        when = f", captured at {point.started_at[11:16]}" if point.started_at else ""
+        self.sub.setText(f"Stop {number}. Heard in {point.count('wifi')} WiFi and "
+                         f"{point.count('ble')} Bluetooth scans{when}.")
         self.model.set_rows(devices)
         self._update_count()
         self.show()

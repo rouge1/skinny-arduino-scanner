@@ -8,10 +8,13 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyMod
 from PySide6.QtGui import QColor
 
 from ..decode import KIND_HELP, ble_notes, maker, services_text
+from . import theme as T
 
 HISTORY_LEN = 720  # RSSI samples kept per device (~2 h of 10 s cycles)
 SORT_ROLE = Qt.UserRole
 RSSI_ROLE = Qt.UserRole + 1
+BEST_ROLE = Qt.UserRole + 2   # peak-hold mark on the signal meter
+STALE_ROLE = Qt.UserRole + 3  # not in the latest scan
 
 
 class Record:
@@ -49,6 +52,8 @@ class Record:
 
 def _age(t):
     s = int(time.time() - t)
+    if s < 3:
+        return "now"
     if s < 60:
         return f"{s}s ago"
     if s < 3600:
@@ -61,8 +66,11 @@ def _clock(t):
 
 
 class Col:
+    """muted: secondary text colour; mono: hardware address font;
+    hidden: off until picked from the header's right-click menu."""
+
     def __init__(self, title, text, sort=None, align=Qt.AlignLeft, rssi=False,
-                 width=80, stretch=False, tip=None):
+                 width=80, stretch=False, tip=None, muted=False, mono=False, hidden=False):
         self.title = title
         self.tip = tip
         self.width = width
@@ -71,41 +79,57 @@ class Col:
         self.sort = sort or text
         self.align = align | Qt.AlignVCenter
         self.rssi = rssi
+        self.muted = muted
+        self.mono = mono
+        self.hidden = hidden
 
 
 NUM = Qt.AlignRight
+MONO = None  # fonts, set by init_fonts() once the app exists
+TNUM = None
+
+
+def init_fonts():
+    global MONO, TNUM
+    MONO = T.mono_font(9)
+    TNUM = T.tabular(T.ui_font(10.5))
 
 WIFI_COLS = [
-    Col("SSID", lambda r: r.d.get("ssid") or "(hidden)",
+    Col("Network", lambda r: r.d.get("ssid") or "(hidden)",
         sort=lambda r: (r.d.get("ssid") or "\uffff").lower(), width=220, stretch=True),
-    Col("BSSID", lambda r: r.d["bssid"], width=150),
-    Col("Vendor", lambda r: r.d.get("vendor", ""), width=160),
+    Col("Signal (dBm)", lambda r: str(r.rssi), sort=lambda r: r.rssi, rssi=True, width=150),
     Col("Ch", lambda r: str(r.d.get("ch", "")), sort=lambda r: r.d.get("ch", 0),
-        align=NUM, width=50),
+        align=NUM, width=44),
     Col("Security", lambda r: r.d.get("sec", ""), width=90),
-    Col("Signal", lambda r: f"{r.rssi} dBm", sort=lambda r: r.rssi, rssi=True, width=150),
-    Col("Best", lambda r: str(r.best), sort=lambda r: r.best, align=NUM),
-    Col("Seen", lambda r: str(r.seen), sort=lambda r: r.seen, align=NUM),
-    Col("Last seen", lambda r: _age(r.last), sort=lambda r: r.last, width=90),
-    Col("First seen", lambda r: _clock(r.first), sort=lambda r: r.first, width=90),
+    Col("Vendor", lambda r: r.d.get("vendor", ""), width=170, muted=True),
+    Col("BSSID", lambda r: r.d["bssid"], width=170, muted=True, mono=True),
+    Col("Last seen", lambda r: _age(r.last), sort=lambda r: r.last, width=80, muted=True),
+    Col("Best", lambda r: str(r.best), sort=lambda r: r.best, align=NUM, width=55,
+        hidden=True),
+    Col("Seen", lambda r: str(r.seen), sort=lambda r: r.seen, align=NUM, width=55, hidden=True),
+    Col("First seen", lambda r: _clock(r.first), sort=lambda r: r.first, width=80,
+        muted=True, hidden=True),
 ]
 
 BLE_COLS = [
-    Col("Address", lambda r: r.d["addr"], width=140),
-    Col("Type", lambda r: r.d.get("kind", ""), width=65,
-        tip=lambda r: KIND_HELP.get(r.d.get("kind"))),
+    Col("Maker", lambda r: maker(r.d), width=160),
     Col("Name", lambda r: r.d.get("name", ""),
-        sort=lambda r: (r.d.get("name") or "\uffff").lower(), width=170),
-    Col("Maker", lambda r: maker(r.d), width=170),
-    Col("Signal", lambda r: f"{r.rssi} dBm", sort=lambda r: r.rssi, rssi=True, width=150),
-    Col("Best", lambda r: str(r.best), sort=lambda r: r.best, align=NUM, width=55),
+        sort=lambda r: (r.d.get("name") or "\uffff").lower(), width=150),
+    Col("Signal (dBm)", lambda r: str(r.rssi), sort=lambda r: r.rssi, rssi=True, width=150),
+    Col("Info", lambda r: ble_notes(r.d.get("info", {})), width=260, stretch=True),
+    Col("Address", lambda r: r.d["addr"], width=170, muted=True, mono=True),
+    Col("Type", lambda r: r.d.get("kind", ""), width=60, muted=True,
+        tip=lambda r: KIND_HELP.get(r.d.get("kind"))),
+    Col("Last seen", lambda r: _age(r.last), sort=lambda r: r.last, width=80, muted=True),
+    Col("Best", lambda r: str(r.best), sort=lambda r: r.best, align=NUM, width=55,
+        hidden=True),
     Col("TX", lambda r: str(r.d["info"]["tx_power"]) if "tx_power" in r.d.get("info", {}) else "",
-        sort=lambda r: r.d.get("info", {}).get("tx_power", -999), align=NUM, width=45),
-    Col("Seen", lambda r: str(r.seen), sort=lambda r: r.seen, align=NUM, width=50),
-    Col("Last seen", lambda r: _age(r.last), sort=lambda r: r.last, width=80),
-    Col("First seen", lambda r: _clock(r.first), sort=lambda r: r.first, width=80),
-    Col("Services", lambda r: services_text(r.d.get("info", {})), width=200),
-    Col("Info", lambda r: ble_notes(r.d.get("info", {})), width=300, stretch=True),
+        sort=lambda r: r.d.get("info", {}).get("tx_power", -999), align=NUM, width=45,
+        hidden=True),
+    Col("Seen", lambda r: str(r.seen), sort=lambda r: r.seen, align=NUM, width=50, hidden=True),
+    Col("First seen", lambda r: _clock(r.first), sort=lambda r: r.first, width=80,
+        muted=True, hidden=True),
+    Col("Services", lambda r: services_text(r.d.get("info", {})), width=200, hidden=True),
 ]
 
 
@@ -136,19 +160,30 @@ class DeviceModel(QAbstractTableModel):
     def data(self, index, role=Qt.DisplayRole):
         r = self.rows[index.row()]
         c = self.cols[index.column()]
+        stale = r.scan != self.scan
         if role == Qt.DisplayRole:
             return c.text(r)
         if role == SORT_ROLE:
             return c.sort(r)
         if role == RSSI_ROLE:
             return r.rssi if c.rssi else None
+        if role == BEST_ROLE:
+            return r.best if c.rssi else None
+        if role == STALE_ROLE:
+            return stale
         if role == Qt.TextAlignmentRole:
             return int(c.align)
-        if role == Qt.ForegroundRole and r.scan != self.scan:
-            return QColor(128, 128, 128)
+        if role == Qt.ForegroundRole:
+            if stale:
+                return QColor(T.FAINT)
+            return QColor(T.MUTED) if c.muted else None
+        if role == Qt.FontRole:
+            return MONO if c.mono else TNUM if c.align & NUM else None
         if role == Qt.ToolTipRole:
-            if r.scan != self.scan:
+            if stale:
                 return "Not seen in the latest scan"
+            if c.rssi:
+                return f"{r.rssi} dBm now, best {r.best} dBm"
             if c.tip:
                 return c.tip(r)
             text = c.text(r)

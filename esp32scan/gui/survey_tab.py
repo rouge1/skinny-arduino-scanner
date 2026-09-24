@@ -5,21 +5,49 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QFormLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-                               QMessageBox, QPushButton, QSlider, QSplitter,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
+                               QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+                               QSlider, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from .. import PROJECT_ROOT
 from .. import survey as sv
+from . import theme as T
 from .stop_devices import StopDevicesWindow
 
-DONE = QColor("#3fb950")
-SKIPPED = QColor("#6e7681")
-CURRENT = QColor("#f0883e")
-CAPTURING = QColor("#f85149")
+STATE_ROLE = Qt.UserRole        # stop list: "done" / "skipped" / "open" / "next" / "capturing"
+DETAIL_ROLE = Qt.UserRole + 1   # stop list: right-hand text
+
+
+def ramp_at(stops, t):
+    """Colour at t (0..1) along a list of hex stops."""
+    t = max(0.0, min(1.0, t)) * (len(stops) - 1)
+    i = min(int(t), len(stops) - 2)
+    a, b = QColor(stops[i]), QColor(stops[i + 1])
+    f = t - i
+    return QColor.fromRgbF(*(a.getRgbF()[k] + (b.getRgbF()[k] - a.getRgbF()[k]) * f
+                             for k in range(3)))
+
+
+def paint_badge(p, c, r, number, state, font):
+    """A stop's numbered disc, shared by the map and the stop list."""
+    fill, edge, text, dash = {
+        "done": (QColor(T.INK), QColor(T.INK), QColor(T.GROUND), False),
+        "capturing": (QColor(T.ACCENT), QColor(T.ACCENT), QColor(T.GROUND), False),
+        "skipped": (QColor(T.GROUND), QColor(T.FAINT), QColor(T.FAINT), True),
+    }.get(state, (QColor(T.GROUND), QColor(T.INK), QColor(T.INK), False))
+    if state in ("open", "next", "skipped"):
+        fill.setAlpha(225)
+    pen = QPen(QColor(T.ACCENT) if state == "next" else edge, 1.6)
+    if dash:
+        pen.setStyle(Qt.DashLine)
+    p.setPen(pen)
+    p.setBrush(fill)
+    p.drawEllipse(c, r, r)
+    p.setFont(font)
+    p.setPen(text)
+    p.drawText(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), Qt.AlignCenter, str(number))
 
 
 class FloorPlan(QWidget):
@@ -29,7 +57,7 @@ class FloorPlan(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setMinimumSize(500, 300)
+        self.setMinimumSize(300, 200)
         self.setMouseTracking(True)
         self.pixmap = None
         self.heat = None          # QImage, grid-sized; scaled over the plan
@@ -39,6 +67,7 @@ class FloorPlan(QWidget):
         self.unit = ""
         self.current = None
         self.inspected = None     # stop whose devices are shown
+        self.legend = None        # colour scale, kept in the image's bottom-right corner
         self.capturing = False
         self._pulse = 0
         self._timer = QTimer(self, interval=120)
@@ -47,7 +76,24 @@ class FloorPlan(QWidget):
 
     def set_plan(self, path):
         self.pixmap = QPixmap(path) if path and Path(path).exists() else None
+        self._place_legend()
         self.update()
+
+    def resizeEvent(self, e):
+        self._place_legend()
+        super().resizeEvent(e)
+
+    def _place_legend(self):
+        if not self.legend:
+            return
+        self.legend.setVisible(self.pixmap is not None and self.heat is not None)
+        if self.pixmap:
+            s, ox, oy = self._geometry()
+            right = ox + self.pixmap.width() * s
+            bottom = oy + self.pixmap.height() * s
+            self.legend.move(int(right - self.legend.width() - 12),
+                             int(bottom + 10) if bottom + 10 + self.legend.height()
+                             <= self.height() else int(bottom - self.legend.height() - 12))
 
     def _tick(self):
         self._pulse = (self._pulse + 1) % 16
@@ -73,12 +119,18 @@ class FloorPlan(QWidget):
         finally:
             p.end()
 
+    def _state(self, i):
+        if i == self.current:
+            return "capturing" if self.capturing else "next"
+        return {"done": "done", "skipped": "skipped"}.get(self.status.get(i), "open")
+
     def _paint(self, p):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.fillRect(self.rect(), QColor(T.GROUND))
         if not self.pixmap:
-            p.setPen(self.palette().text().color())
-            p.drawText(self.rect(), Qt.AlignCenter, "No floor plan loaded")
+            p.setPen(QColor(T.MUTED))
+            p.drawText(self.rect(), Qt.AlignCenter, "Load a route to see its floor plan")
             return
         s, ox, oy = self._geometry()
         target = QRectF(ox, oy, self.pixmap.width() * s, self.pixmap.height() * s)
@@ -86,39 +138,49 @@ class FloorPlan(QWidget):
         if self.heat is not None:
             p.drawImage(target, self.heat)
 
-        font = QFont(self.font())
-        font.setBold(True)
-        font.setPointSizeF(max(7.0, 9 * s))
-        p.setFont(font)
-        r = max(9.0, 12 * s)
+        r = max(10.0, 12 * s)
+        badge_font = T.ui_font(max(8.5, 10 * s), QFont.Weight.DemiBold)
+        name_font = T.ui_font(max(8.5, 10 * s))
+        value_font = T.tabular(T.ui_font(max(9.5, 11 * s), QFont.Weight.DemiBold))
         for i, (name, x, y) in enumerate(self.stops):
             c = QPointF(ox + x * s, oy + y * s)
-            st = self.status.get(i)
+            state = self._state(i)
             if i == self.current:
-                grow = (self._pulse if self._pulse < 8 else 16 - self._pulse) * 0.9
-                color = CAPTURING if self.capturing else CURRENT
-                p.setPen(QPen(color, 3))
+                grow = (self._pulse if self._pulse < 8 else 16 - self._pulse) * 0.7
+                ring = QColor(T.ACCENT)
+                ring.setAlphaF(0.9 - grow / 8)
+                p.setPen(QPen(ring, 2.5))
                 p.setBrush(Qt.NoBrush)
                 p.drawEllipse(c, r + 4 + grow, r + 4 + grow)
             if i == self.inspected:
-                p.setPen(QPen(QColor("white"), 3))
+                p.setPen(QPen(QColor(T.ACCENT), 3))
                 p.setBrush(Qt.NoBrush)
-                p.drawEllipse(c, r + 5, r + 5)
-            fill = DONE if st == "done" else SKIPPED if st == "skipped" else QColor("#1f6feb")
-            p.setPen(QPen(QColor("white"), 1.5))
-            p.setBrush(fill)
-            p.drawEllipse(c, r, r)
-            p.setPen(QColor("white"))
-            p.drawText(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), Qt.AlignCenter, str(i + 1))
-            v = self.values.get(i)
-            label = name if v is None else f"{name}  {v:.0f}{' dBm' if self.unit == 'dBm' else ''}"
-            box = QRectF(c.x() - 90, c.y() + r + 2, 180, 18 * max(s, 0.8))
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(0, 0, 0, 150))
-            w = p.fontMetrics().horizontalAdvance(label) + 10
-            p.drawRoundedRect(QRectF(c.x() - w / 2, box.y(), w, box.height()), 4, 4)
-            p.setPen(QColor("white"))
-            p.drawText(box, Qt.AlignCenter, label)
+                p.drawEllipse(c, r + 4, r + 4)
+            paint_badge(p, c, r, i + 1, state, badge_font)
+            self._paint_label(p, c, r, name, self.values.get(i), name_font, value_font)
+
+    def _paint_label(self, p, c, r, name, value, name_font, value_font):
+        """A dark pill under the stop: the room name, then the layer's value."""
+        p.setFont(name_font)
+        nw = p.fontMetrics().horizontalAdvance(name)
+        h = p.fontMetrics().height() + 4
+        vtext = "" if value is None else f"{value:.0f}".replace("-", "−")
+        p.setFont(value_font)
+        vw = p.fontMetrics().horizontalAdvance(vtext) + 6 if vtext else 0
+        w = nw + vw + 12
+        box = QRectF(c.x() - w / 2, c.y() + r + 4, w, h)
+        bg = QColor(T.GROUND)
+        bg.setAlpha(215)
+        p.setPen(Qt.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(box, 3, 3)
+        p.setFont(name_font)
+        p.setPen(QColor(T.MUTED if vtext else T.INK))
+        p.drawText(box.adjusted(6, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, name)
+        if vtext:
+            p.setFont(value_font)
+            p.setPen(QColor(T.INK))
+            p.drawText(box.adjusted(0, 0, -6, 0), Qt.AlignVCenter | Qt.AlignRight, vtext)
 
     def _stop_at(self, pos):
         s, ox, oy = self._geometry()
@@ -139,9 +201,13 @@ class FloorPlan(QWidget):
 
 
 class Legend(QWidget):
+    """The colour scale as a segmented bar, like the tables' signal meter."""
+
+    SEGMENTS = 10
+
     def __init__(self):
         super().__init__()
-        self.setFixedHeight(38)
+        self.setFixedSize(270, 34)
         self.stops, self.vmin, self.vmax, self.unit = sv.SIGNAL_STOPS, -90, -40, "dBm"
 
     def set_scale(self, stops, vmin, vmax, unit):
@@ -151,22 +217,66 @@ class Legend(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         try:
-            bar = QRectF(4, 4, self.width() - 8, 14)
-            g = QLinearGradient(bar.topLeft(), bar.topRight())
-            for i, c in enumerate(self.stops):
-                g.setColorAt(i / (len(self.stops) - 1), QColor(c))
-            p.fillRect(bar, g)
-            p.setPen(self.palette().text().color())
-            lo = f"{self.vmin:.0f}"
-            hi = f"{self.vmax:.0f} {self.unit}"
-            p.drawText(QRectF(4, 20, bar.width(), 16), Qt.AlignLeft, lo + (" dBm" if self.unit == "dBm" else ""))
-            p.drawText(QRectF(4, 20, bar.width(), 16), Qt.AlignRight, hi)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            bg = QColor(T.GROUND)
+            bg.setAlpha(225)
+            p.setPen(Qt.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(QRectF(self.rect()), 4, 4)
+            p.translate(10, 4)
+            h = self.height() - 8
+            w = self.width() - 20
+            p.setFont(T.tabular(T.ui_font(9.5)))
+            fm = p.fontMetrics()
+            lo = f"{self.vmin:.0f}".replace("-", "−")
+            hi = f"{self.vmax:.0f}".replace("-", "−") + (f" {self.unit}" if self.unit else "")
+            lw, hw = fm.horizontalAdvance(lo) + 8, fm.horizontalAdvance(hi) + 8
+            bar = QRectF(lw, h / 2 - 5, w - lw - hw, 10)
+            gap = 2
+            seg = (bar.width() - gap * (self.SEGMENTS - 1)) / self.SEGMENTS
+            p.setPen(Qt.NoPen)
+            for k in range(self.SEGMENTS):
+                p.setBrush(ramp_at(self.stops, (k + 0.5) / self.SEGMENTS))
+                p.drawRect(QRectF(bar.x() + k * (seg + gap), bar.y(), seg, bar.height()))
+            p.setPen(QColor(T.MUTED))
+            p.drawText(QRectF(0, 0, lw, h), Qt.AlignVCenter | Qt.AlignLeft, lo)
+            p.drawText(QRectF(w - hw, 0, hw, h), Qt.AlignVCenter | Qt.AlignRight, hi)
         finally:
             p.end()
 
 
+class StopDelegate(QStyledItemDelegate):
+    """Stop list row: numbered badge, room name, and scans or 'Skipped' on the right."""
+
+    def sizeHint(self, option, index):
+        return QSize(200, 34)
+
+    def paint(self, p, option, index):
+        state = index.data(STATE_ROLE)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(option.rect)
+        if selected or hover:
+            p.fillRect(rect, QColor(T.RAISED if selected else T.PANEL))
+        c = QPointF(rect.x() + 20, rect.center().y())
+        paint_badge(p, c, 10, index.row() + 1, state, T.ui_font(9, QFont.Weight.DemiBold))
+        p.setFont(T.ui_font(10.5, QFont.Weight.Medium if state in ("next", "capturing")
+                            else QFont.Weight.Normal))
+        p.setPen(QColor(T.FAINT if state == "skipped" else T.INK))
+        text_rect = rect.adjusted(40, 0, -10, 0)
+        p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, index.data(Qt.DisplayRole))
+        p.setFont(T.tabular(T.ui_font(9.5)))
+        p.setPen(QColor(T.ACCENT if state in ("next", "capturing") else T.MUTED))
+        p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignRight, index.data(DETAIL_ROLE) or "")
+        p.restore()
+
+
 class SurveyTab(QWidget):
     """send(cmd_bytes) writes to the board; returns False when not connected."""
+
+    changed = Signal()  # stops captured / survey switched (the rail shows progress)
 
     def __init__(self, db_path, send):
         super().__init__()
@@ -186,80 +296,106 @@ class SurveyTab(QWidget):
         self.plan.clicked.connect(self.plan_clicked)
         self.devices_win = None
 
-        # --- survey controls
-        self.route_label = QLabel()
-        load = QPushButton("Load route…")
+        # --- left column: route, survey, status, stops, capture buttons
+        self.route_label = QLabel(objectName="heading")
+        load = QPushButton("Change route", flat=True)
+        load.setToolTip("Load a different route (.json)")
         load.clicked.connect(self.choose_route)
-        self.survey_box = QComboBox()
-        self.survey_box.activated.connect(self.survey_chosen)
         top = QHBoxLayout()
         top.addWidget(self.route_label, 1)
         top.addWidget(load)
+        self.survey_box = QComboBox()
+        self.survey_box.setToolTip("Past surveys of this route, newest first")
+        self.survey_box.activated.connect(self.survey_chosen)
 
-        self.status = QLabel(wordWrap=True, textFormat=Qt.RichText)
-        self.status.setMinimumHeight(70)
-        self.status.setStyleSheet("font-size: 13pt; padding: 6px; border-radius: 6px;"
-                                  "background: #161b22;")
+        self.card = QFrame(objectName="card")
+        self.card_title = QLabel(objectName="cardTitle", wordWrap=True)
+        self.card_body = QLabel(objectName="cardBody", wordWrap=True, textFormat=Qt.RichText)
+        cl = QVBoxLayout(self.card)
+        cl.setContentsMargins(14, 10, 14, 12)
+        cl.setSpacing(4)
+        cl.addWidget(self.card_title)
+        cl.addWidget(self.card_body)
+
         self.stop_list = QListWidget()
+        self.stop_list.setItemDelegate(StopDelegate(self.stop_list))
+        self.stop_list.setMouseTracking(True)
+        self.stop_list.setFrameShape(QFrame.NoFrame)
+        self.stop_list.setToolTip("Pick a stop to capture it next")
         self.stop_list.currentRowChanged.connect(self._list_row)
-        self.capture_btn = QPushButton("Start / stop capture")
+
+        self.capture_btn = QPushButton("Start capture")
+        self.capture_btn.setProperty("primary", True)
         self.capture_btn.setToolTip("Same as a short press of BOOT on the board")
         self.capture_btn.clicked.connect(lambda: self._send(b"m"))
         self.skip_btn = QPushButton("Skip stop")
         self.skip_btn.setToolTip("Same as holding BOOT for 1 s")
         self.skip_btn.clicked.connect(lambda: self._send(b"k"))
-        btns = QHBoxLayout()
-        btns.addWidget(self.capture_btn)
-        btns.addWidget(self.skip_btn)
         self.import_btn = QPushButton("Import from board")
         self.import_btn.setToolTip("Download the captures the board stored while running "
                                    "on its own (power bank) and turn them into a survey")
         self.import_btn.clicked.connect(self.import_from_board)
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        btns.addWidget(self.skip_btn)
+        btns.addWidget(self.import_btn)
 
-        sbox = QGroupBox("Survey")
-        sl = QVBoxLayout(sbox)
-        sl.addLayout(top)
-        sl.addWidget(self.survey_box)
-        sl.addWidget(self.status)
-        sl.addWidget(QLabel("Stops (select one to capture it next):"))
-        sl.addWidget(self.stop_list, 1)
-        sl.addLayout(btns)
-        sl.addWidget(self.import_btn)
+        left = QFrame(objectName="side")
+        left.setFixedWidth(300)
+        ll = QVBoxLayout(left)
+        ll.setContentsMargins(16, 14, 16, 16)
+        ll.setSpacing(10)
+        ll.addLayout(top)
+        ll.addWidget(self.survey_box)
+        ll.addSpacing(2)
+        ll.addWidget(self.card)
+        ll.addWidget(self.stop_list, 1)
+        ll.addWidget(self.capture_btn)
+        ll.addLayout(btns)
 
-        # --- heat map controls
+        # --- map bar: what the heat map shows, and its scale
         self.layer_box = QComboBox()
         for key, (label, *_rest) in sv.LAYERS.items():
             self.layer_box.addItem(label, key)
+        self.layer_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.layer_box.setMinimumContentsLength(18)
         self.layer_box.currentIndexChanged.connect(self._layer_changed)
         self.target_box = QComboBox()
         self.target_box.setMaxVisibleItems(25)
+        self.target_box.setMinimumContentsLength(18)
+        self.target_box.setPlaceholderText("Nothing captured yet")
+        self.target_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.target_box.currentIndexChanged.connect(self.refresh_heat)
         self.reach = QSlider(Qt.Horizontal, minimum=60, maximum=500, value=220)
-        self.reach.setToolTip("How far from a stop the map is drawn (floor-plan pixels)")
+        self.reach.setMinimumWidth(60)
+        self.reach.setMaximumWidth(110)
+        self.reach.setToolTip("How far from a stop the colour spreads")
         self.reach.valueChanged.connect(self.refresh_heat)
         self.legend = Legend()
-        hbox = QGroupBox("Heat map")
-        hl = QFormLayout(hbox)
-        hl.addRow("Show", self.layer_box)
-        hl.addRow("Target", self.target_box)
-        hl.addRow("Reach", self.reach)
-        hl.addRow(self.legend)
+        self.legend.setParent(self.plan)
+        self.plan.legend = self.legend
+        bar = QHBoxLayout()
+        bar.setContentsMargins(16, 12, 16, 10)
+        bar.setSpacing(10)
+        bar.addWidget(QLabel("Show", objectName="fieldLabel"))
+        bar.addWidget(self.layer_box, 2)
+        bar.addWidget(self.target_box, 3)
+        bar.addSpacing(12)
+        bar.addWidget(QLabel("Reach", objectName="fieldLabel"))
+        bar.addWidget(self.reach, 1)
 
-        left = QWidget()
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(6, 6, 6, 6)
-        ll.addWidget(sbox, 1)
-        ll.addWidget(hbox)
-        left.setMinimumWidth(330)
-        left.setMaximumWidth(460)
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        rl.addLayout(bar)
+        rl.addWidget(self.plan, 1)
 
-        split = QSplitter(Qt.Horizontal)
-        split.addWidget(left)
-        split.addWidget(self.plan)
-        split.setStretchFactor(1, 1)
-        lay = QVBoxLayout(self)
+        lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(split)
+        lay.setSpacing(0)
+        lay.addWidget(left)
+        lay.addWidget(right, 1)
 
         self._clock = QTimer(self, interval=1000)
         self._clock.timeout.connect(self.update_status)
@@ -277,7 +413,8 @@ class SurveyTab(QWidget):
         self.survey_id = survey_id
         self.points = points or {}
         self.mark = None
-        self.route_label.setText(f"Route: <b>{route['name']}</b> ({len(route['stops'])} stops)")
+        self.route_label.setText(route["name"])
+        self.route_label.setToolTip(f"{len(route['stops'])} stops")
         self.plan.set_plan(route["floorplan"])
         self.plan.stops = [(s["name"], s["x"], s["y"]) for s in route["stops"]]
         self.current = self._next_open(0)
@@ -296,9 +433,11 @@ class SurveyTab(QWidget):
     def _fill_surveys(self):
         self.survey_box.blockSignals(True)
         self.survey_box.clear()
-        self.survey_box.addItem("New survey (starts on the first capture)", None)
+        self.survey_box.addItem("New survey (starts at the first capture)", None)
+        prefix = (self.route or {}).get("name", "")
         for sid, name, done, total in self.store.surveys():
-            self.survey_box.addItem(f"{name}  ·  {done}/{total} stops", sid)
+            short = name[len(prefix):].strip() if prefix and name.startswith(prefix) else name
+            self.survey_box.addItem(f"{short}, {done} of {total} stops", sid)
             if sid == self.survey_id:
                 self.survey_box.setCurrentIndex(self.survey_box.count() - 1)
         self.survey_box.blockSignals(False)
@@ -355,7 +494,7 @@ class SurveyTab(QWidget):
         for d in devices:
             where = loudest.get((d["kind"], d["identifier"]), (stop, 0))[0]
             d["loudest"] = where
-            d["loudest_name"] = f"{where + 1}. {self.points[where].name}"
+            d["loudest_name"] = self.points[where].name
         self.devices_win.show_stop(stop + 1, p, devices)
         self.plan.inspected = stop
         self.plan.update()
@@ -529,59 +668,81 @@ class SurveyTab(QWidget):
             self.refresh_heat()
         self.update_status()
         self.plan.update()
+        self.changed.emit()
 
     def _fill_stop_list(self):
         self.stop_list.blockSignals(True)
         self.stop_list.clear()
         if self.route:
+            active = self.mark["stop"] if self.mark else self.current
             for i, s in enumerate(self.route["stops"]):
                 p = self.points.get(i)
-                if p and p.status == "done":
-                    mark = f"✓  {p.count('wifi')} WiFi · {p.count('ble')} BT"
+                if i == active:
+                    state = "capturing" if self.mark else "next"
+                    detail = "capturing" if self.mark else "next"
+                elif p and p.status == "done":
+                    state, detail = "done", f"{p.count('wifi')} WiFi, {p.count('ble')} BT"
                 elif p:
-                    mark = "skipped"
+                    state, detail = "skipped", "skipped"
                 else:
-                    mark = ""
-                item = QListWidgetItem(f"{i + 1}. {s['name']}    {mark}")
+                    state, detail = "open", ""
+                item = QListWidgetItem(s["name"])
+                item.setData(STATE_ROLE, state)
+                item.setData(DETAIL_ROLE, detail)
                 if p and p.status == "done":
-                    item.setForeground(DONE)
-                elif p:
-                    item.setForeground(SKIPPED)
+                    item.setToolTip(f"{p.count('wifi')} WiFi and {p.count('ble')} Bluetooth "
+                                    "scans. Pick it to capture it again.")
                 self.stop_list.addItem(item)
-            active = self.mark["stop"] if self.mark else self.current
             if active is not None:
                 self.stop_list.setCurrentRow(active)
         self.stop_list.blockSignals(False)
 
-    def update_status(self):
+    def progress(self):
+        """'7/10' for the rail, or '' with no route."""
         if not self.route:
-            html = "Load a route to start."
+            return ""
+        done = sum(1 for p in self.points.values() if p.status == "done")
+        return f"{done}/{len(self.route['stops'])}"
+
+    def update_status(self):
+        state, lines = "idle", []
+        if not self.route:
+            title = "No route loaded"
+            lines.append("Load a route to start.")
         elif self.mark:
             s = self.route["stops"][self.mark["stop"]]
             secs = int(time.time() - self.mark["started"])
             nw = sum(1 for _, sc in self.mark["scans"] if sc.kind == "wifi")
             nb = sum(1 for _, sc in self.mark["scans"] if sc.kind == "ble")
-            html = (f"<span style='color:{CAPTURING.name()}'>●</span> Capturing "
-                    f"<b>{s['name']}</b> · {secs} s<br>"
-                    f"<small>{nw} WiFi + {nb} Bluetooth scans so far. "
-                    f"Press BOOT to stop.</small>")
+            state, title = "capturing", f"Capturing {s['name']}, {secs} s"
+            lines.append(f"{nw} WiFi and {nb} Bluetooth scans so far. Press BOOT to stop.")
         elif self.current is None:
-            html = ("✓ Survey complete. Click the map to see what was heard there; "
-                    "pick a stop in the list to redo it.")
+            title = "Survey complete"
+            lines.append("Click the map to list what was heard near a stop. "
+                         "Pick a stop to capture it again.")
         else:
             s = self.route["stops"][self.current]
-            html = (f"Next: <b>{s['name']}</b> ({self.current + 1}/{len(self.route['stops'])})"
-                    f"<br><small>Go there and press BOOT to start. "
-                    f"Hold BOOT 1 s to skip.</small>")
-        if not getattr(self, "connected", False):
-            html += "<br><small style='color:#d29922'>Board not connected.</small>"
-        elif self.board_log and self.board_log[0]:
+            state, title = "next", f"Next: {s['name']}"
+            lines.append(f"Stop {self.current + 1} of {len(self.route['stops'])}. Go there and "
+                         "press BOOT to start, or hold it for 1 s to skip.")
+        connected = getattr(self, "connected", False)
+        if not connected and state in ("next", "capturing"):
+            lines.append(f"<span style='color:{T.WARN}'>Connect the board to capture "
+                         "from here, or walk the route on a power bank.</span>")
+        elif connected and self.board_log and self.board_log[0]:
             stops, size = self.board_log
-            html += (f"<br><small style='color:#58a6ff'>The board has {stops} stops stored "
-                     f"from a walk ({size // 1024} KB): click Import from board.</small>")
+            lines.append(f"<span style='color:{T.ACCENT}'>The board holds {stops} stops "
+                         f"from a walk ({size // 1024} KB). Import them from the board."
+                         "</span>")
         if self.message:
-            html += f"<br><small>{self.message}</small>"
-        self.status.setText(html)
+            lines.append(f"<span style='color:{T.INK}'>{self.message}</span>")
+        self.card_title.setText(title)
+        self.card_body.setText("<br>".join(lines))
+        if self.card.property("state") != state:
+            self.card.setProperty("state", state)
+            self.card.style().unpolish(self.card)
+            self.card.style().polish(self.card)
+        self.capture_btn.setText("Stop capture" if self.mark else "Start capture")
 
     def _layer_changed(self):
         self._fill_targets()
@@ -598,7 +759,7 @@ class SurveyTab(QWidget):
             i = self.target_box.findData(keep)
             if i >= 0:
                 self.target_box.setCurrentIndex(i)
-        self.target_box.setEnabled(sv.LAYERS[layer][3])
+        self.target_box.setVisible(sv.LAYERS[layer][3])
         self.target_box.blockSignals(False)
 
     def refresh_heat(self):
@@ -628,4 +789,5 @@ class SurveyTab(QWidget):
             h, w, _ = rgba.shape
             self._rgba = rgba.copy(order="C")  # QImage doesn't own the buffer
             self.plan.heat = QImage(self._rgba.data, w, h, 4 * w, QImage.Format_RGBA8888)
+        self.plan._place_legend()
         self.plan.update()

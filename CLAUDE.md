@@ -55,8 +55,19 @@ pollute `data/captures.db`.
 - `esp32scan/gui/`: `worker.py` (QThread that owns the serial port *and* the
   DB connection, so all serial writes go through its command queue),
   `models.py` (append-only `DeviceModel` + `DeviceFilter` proxy; rows are
-  never reordered, so selection survives updates), `widgets.py` (RSSI bar
-  delegate, `ChannelMap`, `SignalHistory`), `window.py`.
+  never reordered, so selection survives updates), `widgets.py` (signal
+  meter delegate, header column menu, `ChannelMap`, `SignalHistory`),
+  `window.py` (left rail + stacked pages; no toolbar/menu/status bar).
+- `esp32scan/gui/theme.py` owns the look: colour tokens, fonts, the Qt
+  palette + stylesheet, and `signal_color()` (the heat map's `SIGNAL_STOPS`
+  ramp, so tables and map agree). Use its tokens rather than new hex values.
+  The accent (cyan) is deliberately outside both data ramps: don't use
+  red/amber/green for UI state, those mean signal strength.
+  Fonts are bundled in `gui/fonts/` (OFL): Barlow Semi Condensed for the UI,
+  Azeret Mono only for hardware addresses and the console. Azeret is a static
+  Regular cut from the variable font (the variable default is Thin).
+  Columns have `hidden`/`muted`/`mono` flags; the header's right-click menu
+  toggles columns and remembers them in `QSettings("esp32-ai", "scanner")`.
 
 ## Gotchas
 

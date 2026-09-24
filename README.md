@@ -16,8 +16,19 @@ them live, charts signal strength over time and logs every scan to SQLite.
 
 ## Features
 
-- **WiFi tab**: SSID, BSSID, vendor (from the IEEE OUI registry), channel,
-  security, live signal bar, best signal seen, how many scans it appeared in,
+The window has a rail on the left: the pages (WiFi, Bluetooth, Survey,
+Console, with live counts; Ctrl+1–4) and, below them, the board's controls
+(port, connect, what to scan, pause, free heap, database logging).
+
+- **Signal meter**: every signal column is a segmented bar, one segment per
+  5 dB, coloured with the same weak→strong scale as the heat map, so a colour
+  means the same dBm everywhere. A dimmer segment further right marks the
+  best reading so far (peak hold).
+- **Columns**: each table shows the useful few by default. Right-click a
+  column header to show the rest (best, seen count, first seen, TX power,
+  services…). The choice is remembered.
+- **WiFi**: SSID, BSSID, vendor (from the IEEE OUI registry), channel,
+  security, signal with best, how many scans it appeared in,
   first/last seen. Hidden networks are included. BSSIDs with the
   locally-administered bit set show as `(virtual/local)`: they are the extra
   virtual networks an access point runs next to its main one, so they have no
@@ -25,7 +36,7 @@ them live, charts signal strength over time and logs every scan to SQLite.
 - **Channel map**: the usual WiFi-analyser view, where each network is an arch
   over its 2.4 GHz channel. It shows at a glance how crowded channels 1/6/11
   are.
-- **Bluetooth tab**: address and its **type** (public / random static / RPA /
+- **Bluetooth**: address and its **type** (public / random static / RPA /
   NRPA; hover for what each means), name, maker, signal, advertised TX power,
   services, and an Info column with beacons (iBeacon, Eddystone), Apple
   Continuity messages (Find My, Nearby Info, AirPods pairing, AirPlay…) and
@@ -37,17 +48,17 @@ them live, charts signal strength over time and logs every scan to SQLite.
   device, decoded, plus the raw bytes.
 - **Signal history**: RSSI over the last 10 minutes for the selected rows
   (or the strongest few when nothing is selected). Multi-select works.
-- Devices persist across scans. Rows missing from the latest scan turn grey.
-  "Only in latest scan" hides them.
-- Filter box matches any column. Every column is sortable.
-- Switch between **WiFi / Bluetooth / Both** and **Pause** (Space) while
-  connected.
-- **Survey** tab: walk a route through the building and build WiFi and
+- Devices persist across scans. Rows missing from the latest scan fade.
+  "Latest scan only" hides them.
+- The search box (Ctrl+F) matches any column. Every column is sortable.
+- Switch between **WiFi / Bluetooth / Both** and **Pause scanning** (Space)
+  while connected.
+- **Survey**: walk a route through the building and build WiFi and
   Bluetooth **heat maps** on the floor plan (see below).
-- **Console** tab: raw serial output from the board, plus a box for sending
+- **Console**: raw serial output from the board, plus a box for sending
   commands by hand.
-- **Log to database**: every scan is saved to `data/captures.db`.
-  **File → Export … as CSV** saves the current table.
+- **Save scans to the database**: every scan is saved to `data/captures.db`.
+  **Export CSV** above each table saves it; **Forget all** clears both lists.
 
 ## Hardware
 
@@ -163,34 +174,34 @@ out, the LED stops blipping.
 
 ### With the laptop
 
-1. Start `./scanner-gui` and open the **Survey** tab. (While an app is
+1. Start `./scanner-gui` and open **Survey**. (While an app is
    connected the board doesn't store captures in flash.) It loads the first route
    in `routes/`. The panel shows the next stop.
 2. At each stop, press BOOT, wait **20–30 s**, then press BOOT again. Only
    scans that ran entirely inside the capture count, and a WiFi + Bluetooth
    cycle takes about 8.5 s, so 30 s gives about 3 of each. A capture with no
    complete scan is rejected.
-3. The stop turns green and the map updates. Selecting a stop in the list
+3. The stop's badge fills in and the map updates. Selecting a stop in the list
    (or clicking one on the map that isn't captured yet) makes it the next one
-   to capture, which is how you redo one. **Start / stop capture** and
-   **Skip stop** do the same as the button.
+   to capture, which is how you redo one. **Start capture** / **Stop
+   capture** and **Skip stop** do the same as the button.
 
 **Clicking the map** anywhere near a captured stop opens a **Devices** window
 listing every WiFi network and Bluetooth device heard there: average and best
 signal, how many of the stop's scans heard it, maker, channel/security (WiFi),
-address type, services and decoded info (Bluetooth). **WiFi** / **Bluetooth**
-checkboxes and a text filter narrow the list. The window stays open and
+address type, services and decoded info (Bluetooth). The **WiFi** /
+**Bluetooth** chips (with their counts) and the search box narrow the list. The window stays open and
 follows your clicks.
 
 To work out **what is in a particular room**:
 - **Min signal** hides anything weaker than the threshold at this stop.
   Roughly, −60 dBm or better is usually the same room and −80 or worse is far
   away, but transmit power varies a lot (a phone vs. a beacon vs. an AP).
-- **Only loudest here** keeps only devices whose strongest reading over the
+- **Strongest here only** keeps only devices whose strongest reading over the
   whole walk was at this stop. The **Loudest at** column shows that stop for
   every device. This is the better test, because a device heard at −70 here
   but −55 next door is next door.
-- Together (e.g. loudest here and ≥ −70 dBm) they give a short list of likely
+- Together (e.g. strongest here and ≥ −70 dBm) they give a short list of likely
   in-room devices. It's room-level at best: bodies, walls and orientation
   shift RSSI by 5–10 dB, and phones' RPA addresses rotate about every 15 min.
 
@@ -277,7 +288,7 @@ them if no JSON arrives for 12 s, so a board reboot recovers by itself.
 - `surveys`, `survey_points`, `survey_readings`: heat-map surveys, one row
   per survey, per captured or skipped stop (redoing a stop replaces it) and
   per network/device per scan at a stop. They're kept separately from the
-  capture log, so surveys work with "Log to database" off.
+  capture log, so surveys work with "Save scans to the database" off.
 - `entries`: one row per network/device per scan: `rssi`, `identifier`
   (BSSID or BLE address), `name` (SSID or BLE name), `channel`, `security`,
   and `extra` (JSON). For WiFi, `extra` holds the OUI `vendor`. For BLE it
