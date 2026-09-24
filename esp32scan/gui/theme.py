@@ -148,7 +148,7 @@ QPushButton[flat="true"], QToolButton[flat="true"] {{ border-color: transparent;
 QPushButton[flat="true"]:hover, QToolButton[flat="true"]:hover {{ color: {INK}; }}
 
 /* segmented control: checkable buttons in a row */
-QToolButton[segment] {{ border-radius: 0; padding: 4px 10px; color: {MUTED}; border-color: {LINE}; }}
+QToolButton[segment] {{ border-radius: 0; padding: 4px 6px; color: {MUTED}; border-color: {LINE}; }}
 QToolButton[segment="first"] {{ border-top-left-radius: 4px; border-bottom-left-radius: 4px; }}
 QToolButton[segment="last"] {{ border-top-right-radius: 4px; border-bottom-right-radius: 4px; }}
 QToolButton[segment]:checked {{ background: {RAISED}; color: {INK}; border-color: {ACCENT}; }}

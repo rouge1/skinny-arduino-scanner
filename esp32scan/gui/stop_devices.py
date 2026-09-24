@@ -1,6 +1,7 @@
 """Panel (under the survey map) listing every network/device heard at one stop."""
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
+from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt,
+                            Signal)
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QSlider, QTableView, QToolButton, QVBoxLayout, QWidget)
@@ -147,6 +148,8 @@ class StopDevicesPanel(QWidget):
     """show_stop() replaces the contents on every map click; clear() goes back
     to the empty state."""
 
+    kinds_changed = Signal(set)  # the user toggled the WiFi/Bluetooth chips
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.model = DeviceTable()
@@ -236,6 +239,7 @@ class StopDevicesPanel(QWidget):
     def _kind(self, kind, on):
         self.proxy.set_kind(kind, on)
         self._update_count()
+        self.kinds_changed.emit(set(self.proxy.kinds))
 
     def _min_rssi(self, v):
         self.min_label.setText("Any signal" if v <= -100

@@ -22,7 +22,8 @@ DETAIL_ROLE = Qt.UserRole + 1   # stop list: right-hand text
 INSPECTED_ROLE = Qt.UserRole + 2  # stop list: the stop whose devices are listed
 
 # What a layer's number counts, short (map labels) and long (colour scale).
-UNITS = {"wifi_count": ("APs", "access points"), "ble_count": ("BT", "BT devices")}
+UNITS = {"wifi_count": ("APs", "access points"), "ble_count": ("BT", "BT devices"),
+         "all_count": ("dev", "WiFi + BT devices")}
 
 
 def layer_units(layer):
@@ -319,6 +320,7 @@ class SurveyTab(QWidget):
                              "captured stop")
         self.plan.clicked.connect(self.plan_clicked)
         self.devices = StopDevicesPanel()
+        self.devices.kinds_changed.connect(self._kinds_to_layer)
 
         # --- left column: route, survey, status, stops, capture buttons
         self.route_label = QLabel(objectName="heading")
@@ -722,6 +724,16 @@ class SurveyTab(QWidget):
             if active is not None:
                 self.stop_list.setCurrentRow(active)
         self.stop_list.blockSignals(False)
+
+    # Devices panel WiFi/Bluetooth chips -> the matching "heard" layer.
+    KIND_LAYERS = {frozenset({"wifi"}): "wifi_count", frozenset({"ble"}): "ble_count",
+                   frozenset({"wifi", "ble"}): "all_count"}
+
+    def _kinds_to_layer(self, kinds):
+        layer = self.KIND_LAYERS.get(frozenset(kinds))
+        i = self.layer_box.findData(layer) if layer else -1
+        if i >= 0:
+            self.layer_box.setCurrentIndex(i)
 
     def _mark_inspected(self):
         """Highlight the clicked stop in the list too, and scroll it into view."""

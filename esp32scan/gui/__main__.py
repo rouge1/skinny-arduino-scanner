@@ -15,7 +15,7 @@ from .window import MainWindow
 def main():
     ap = argparse.ArgumentParser(description="ESP32 WiFi + Bluetooth scanner GUI")
     ap.add_argument("--port", help="serial port (default: auto-detect)")
-    ap.add_argument("--mode", choices=["wifi", "bt", "both"], default="both")
+    ap.add_argument("--mode", choices=["wifi", "bt", "both", "fast"], default="both")
     ap.add_argument("--db", default=str(DEFAULT_DB), help="SQLite capture log")
     ap.add_argument("--no-record", action="store_true", help="don't log scans to the db")
     args = ap.parse_args()

@@ -100,6 +100,12 @@ pollute `data/captures.db`.
 - To test surveys without pressing the button, send `m` / `k` over serial.
   They're handled between scans, so they lag the physical button by up to
   one scan.
+- **Scan length**: the Bluetooth scan length (`g_bleSeconds`) is separate
+  from the mode: `f` = 1 s, `n` = 5 s. Every app mode in
+  `protocol.MODE_CMDS` sends both letters (`"fast"` = `bf`, the others end in
+  `n`), so leaving Fast always restores 5 s scans, including after a
+  re-handshake. The firmware reports `mode` as `"bt"` in Fast; `ble_s` tells
+  them apart.
 - **Serial is 460800 baud** (`Serial.begin` and `link.BAUD` must match). The
   boot ROM prints at 115200 regardless, and `Link` replaces that garbage with
   a placeholder line.

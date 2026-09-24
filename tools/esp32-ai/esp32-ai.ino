@@ -16,6 +16,8 @@
 //   t = text tables (default)   ? = print a status/hello line
 //   m = same as a short BOOT press   k = same as a long BOOT press
 //   d = dump the survey log   c = clear the survey log
+//   f = fast Bluetooth scans (1 s, for tracking down one device)
+//   n = normal Bluetooth scans (5 s, the default)
 //
 // Survey marks: a short press of the BOOT button starts a capture at the
 // current spot, the next short press stops it; a long press (>= 1 s) skips
@@ -35,16 +37,18 @@
 // fast flicker = capture rejected (too short) or log full; a skip starts
 // with three quick flashes; otherwise a short blip every 2 s (alive).
 
-static const uint32_t BLE_SCAN_SECONDS = 5;
+static const uint32_t BLE_SCAN_SECONDS = 5;       // normal: catches slow advertisers
+static const uint32_t BLE_FAST_SCAN_SECONDS = 1;  // 'f': quick updates while hunting
 static const int LED_PIN = 2;
 static const int BUTTON_PIN = 0;  // BOOT; only a strapping pin during reset
 static const uint32_t LONG_PRESS_MS = 1000;
-static const int FW_VERSION = 5;
+static const int FW_VERSION = 6;
 static const size_t MAX_BLE_DEVICES = 256;  // cap per scan so a crowded area can't exhaust the heap
 static const char *LOG_PATH = "/survey.jsonl";
 
 enum Mode { MODE_BT, MODE_WIFI, MODE_BOTH, MODE_IDLE };
 static Mode g_mode = MODE_BOTH;
+static uint32_t g_bleSeconds = BLE_SCAN_SECONDS;
 static bool g_json = false;
 static bool g_host = false;  // an app sent 'j' since boot: captures aren't logged to flash
 static volatile bool g_scanning = false;
@@ -264,9 +268,10 @@ static void printHello() {
   OutLock lock;
   if (g_json) {
     lineStart();
-    lineAdd("{\"ev\":\"hello\",\"fw\":\"esp32-ai\",\"ver\":%d,\"mode\":\"%s\",\"marking\":%s,"
-            "\"t\":%lu,\"stops\":%lu,\"log_bytes\":%lu,\"fs\":%s,\"mac\":",
-            FW_VERSION, modeKey(g_mode), g_marking ? "true" : "false", (unsigned long)millis(),
+    lineAdd("{\"ev\":\"hello\",\"fw\":\"esp32-ai\",\"ver\":%d,\"mode\":\"%s\",\"ble_s\":%lu,"
+            "\"marking\":%s,\"t\":%lu,\"stops\":%lu,\"log_bytes\":%lu,\"fs\":%s,\"mac\":",
+            FW_VERSION, modeKey(g_mode), (unsigned long)g_bleSeconds,
+            g_marking ? "true" : "false", (unsigned long)millis(),
             (unsigned long)g_stops, (unsigned long)logBytes(), g_fsOk ? "true" : "false");
     lineStr(WiFi.macAddress().c_str());
     lineAdd("}");
@@ -386,9 +391,11 @@ static void clearLog() {
 static void printMode() {
   OutLock lock;
   if (g_json) {
-    Serial.printf("{\"ev\":\"mode\",\"mode\":\"%s\"}\n", modeKey(g_mode));
+    Serial.printf("{\"ev\":\"mode\",\"mode\":\"%s\",\"ble_s\":%lu}\n", modeKey(g_mode),
+                  (unsigned long)g_bleSeconds);
   } else {
-    Serial.printf("\n[mode] %s\n", modeLabel(g_mode));
+    Serial.printf("\n[mode] %s, %lu s Bluetooth scans\n", modeLabel(g_mode),
+                  (unsigned long)g_bleSeconds);
   }
 }
 
@@ -413,6 +420,15 @@ void handleSerial() {
       case 'k': longPress(millis()); continue;
       case 'd': dumpLog(); continue;
       case 'c': clearLog(); continue;
+      case 'f':
+      case 'n': {
+        uint32_t secs = c == 'f' ? BLE_FAST_SCAN_SECONDS : BLE_SCAN_SECONDS;
+        if (secs != g_bleSeconds) {
+          g_bleSeconds = secs;
+          printMode();
+        }
+        continue;
+      }
       default: continue;
     }
     if (m != g_mode) {
@@ -572,7 +588,7 @@ void doBleScan(uint32_t n) {
   scanStarted("ble", n, t);
   g_scanning = true;
   BLEScan *scan = BLEDevice::getScan();
-  scan->start(BLE_SCAN_SECONDS, false);
+  scan->start(g_bleSeconds, false);
   scan->clearResults();
   g_scanning = false;
   uint32_t t1 = millis();

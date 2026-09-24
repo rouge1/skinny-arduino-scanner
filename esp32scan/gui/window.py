@@ -370,9 +370,11 @@ class MainWindow(QMainWindow):
 
         board.addSpacing(8)
         board.addWidget(label("Scan for", "railSection"))
-        self.mode_seg = Segmented([(k, t, f"Scan {MODE_LABELS[k]}") for k, t in
-                                   (("wifi", "WiFi"), ("bt", "Bluetooth"), ("both", "Both"))],
-                                  self.mode)
+        self.mode_seg = Segmented(
+            [("wifi", "WiFi", "Scan WiFi"), ("bt", "Bluetooth", "Scan Bluetooth"),
+             ("both", "Both", "Scan WiFi + Bluetooth"),
+             ("fast", "Fast", "Bluetooth only, 1 s scans: quick updates for tracking "
+                              "down one device")], self.mode)
         self.mode_seg.chosen.connect(self.change_mode)
         board.addWidget(self.mode_seg)
         self.pause_btn = button("Pause scanning", tip="Pause or resume scanning (Space)")

@@ -273,6 +273,7 @@ LAYERS = {
     "wifi_count": ("WiFi: access points heard", "wifi", "count", False),
     "ble_dev": ("Bluetooth: one device", "ble", "dBm", True),
     "ble_count": ("Bluetooth: devices heard", "ble", "count", False),
+    "all_count": ("WiFi + Bluetooth: everything heard", "all", "count", False),
 }
 
 
@@ -289,8 +290,12 @@ def point_value(point, layer, target=None):
     kind. Signal layers: per scan the strongest matching reading, averaged over
     the scans that heard it; FLOOR_DBM if none did. Count layers: distinct
     identifiers per scan, averaged over scans (so longer captures don't count
-    more)."""
+    more). "all_count" adds the WiFi and Bluetooth averages."""
     _, kind, unit, _ = LAYERS[layer]
+    if kind == "all":
+        parts = [point_value(point, k) for k in ("wifi_count", "ble_count")]
+        parts = [v for v in parts if v is not None]
+        return float(sum(parts)) if parts else None
     scans = [s for s in point.scans if s.kind == kind]
     if point.status != "done" or not scans:
         return None

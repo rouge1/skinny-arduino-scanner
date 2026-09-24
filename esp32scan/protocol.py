@@ -3,8 +3,9 @@
 The host sends single-character commands; in JSON mode ('j') the firmware
 answers with one JSON object per line, each tagged with an "ev" field:
 
-  hello       {"fw","ver","mode","mac"}           reply to 'j', 't', '?'
-  mode        {"mode"}                            after a mode change
+  hello       {"fw","ver","mode","ble_s","mac"}   reply to 'j', 't', '?'
+  mode        {"mode","ble_s"}                    after a mode or scan-length change
+                                                  (ble_s: Bluetooth scan seconds, 5 or 1)
   scan_start  {"kind","scan"}                     kind is "wifi" or "ble"
   wifi        {"scan","bssid","ssid","rssi","ch","sec"}
   ble         {"scan","addr","at","rssi","adv"}      at: address type (bit 0 = random);
@@ -23,11 +24,15 @@ CMD_JSON = b"j"
 CMD_TEXT = b"t"
 CMD_STATUS = b"?"
 CMD_STOP = b"s"
-MODE_CMDS = {"wifi": b"w", "bt": b"b", "both": b"x"}
+# Each app mode sets the scan kinds and the Bluetooth scan length: "n" = normal
+# 5 s scans, "f" = fast 1 s scans ("fast" is Bluetooth only, for hunting down
+# one device).
+MODE_CMDS = {"wifi": b"wn", "bt": b"bn", "both": b"xn", "fast": b"bf"}
 MODE_LABELS = {
     "wifi": "WiFi",
     "bt": "Bluetooth",
     "both": "WiFi + Bluetooth",
+    "fast": "Bluetooth, fast",
     "idle": "Stopped",
 }
 

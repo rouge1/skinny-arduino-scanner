@@ -51,8 +51,12 @@ Console, with live counts; Ctrl+1–4) and, below them, the board's controls
 - Devices persist across scans. Rows missing from the latest scan fade.
   "Latest scan only" hides them.
 - The search box (Ctrl+F) matches any column. Every column is sortable.
-- Switch between **WiFi / Bluetooth / Both** and **Pause scanning** (Space)
-  while connected.
+- Switch between **WiFi / Bluetooth / Both / Fast** and **Pause scanning**
+  (Space) while connected. **Fast** is Bluetooth only with 1 s scans, so it
+  updates about every 1.3 s instead of every 5–8 s. Use it to track down one
+  device: type its name or address in the search box, click its row, and
+  watch the signal history as you walk (it catches slightly fewer devices per
+  scan, about 97 vs 130 here, because slow advertisers can miss a 1 s window).
 - **Survey**: walk a route through the building and build WiFi and
   Bluetooth **heat maps** on the floor plan (see below).
 - **Console**: raw serial output from the board, plus a box for sending
@@ -191,8 +195,9 @@ out, the LED stops blipping.
 heard there: average and best signal, how many of the stop's scans heard it,
 maker, channel/security (WiFi), address type, services and decoded info
 (Bluetooth). The **WiFi** / **Bluetooth** chips (with their counts) and the
-search box narrow the list. Drag the divider to give the map or the list more
-room.
+search box narrow the list. The chips also switch the map to match: WiFi only
+shows **access points heard**, Bluetooth only **devices heard**, and both
+**everything heard**. Drag the divider to give the map or the list more room.
 
 To work out **what is in a particular room**:
 - The **signal slider** ("Any signal", or "≥ −70 dBm" etc.) hides anything
@@ -209,10 +214,9 @@ To work out **what is in a particular room**:
 
 The number beside each stop on the map is the current layer's value there,
 with its unit: a signal in **dBm**, or for the "heard" layers the **average
-count per scan** (**APs** = WiFi access points, **BT** = Bluetooth devices).
-Clicking a stop rings it on the map and highlights the same stop in the list
-on the left.
-That's lower than the total in the Devices panel, because not every device
+count per scan** (**APs** = WiFi access points, **BT** = Bluetooth devices,
+**dev** = both together). Clicking a stop rings it on the map and highlights
+the same stop in the list on the left. A count is lower than the total in the Devices panel, because not every device
 is caught in every scan.
 
 The first capture starts a new survey. Earlier surveys can be picked from the
@@ -220,7 +224,7 @@ drop-down to view or continue.
 
 **Heat map layers**: coverage of one SSID (strongest AP broadcasting it), the
 strongest signal of any network, one access point (BSSID), one Bluetooth
-device, and the number of APs / Bluetooth devices heard. At each stop a
+device, and the number of APs / Bluetooth devices / both heard. At each stop a
 signal value is the strongest matching reading per scan, averaged over the
 scans that heard it, or −100 dBm if none did. Between stops the value is
 inverse-distance weighted, and the map fades out beyond **Reach** pixels from
@@ -243,6 +247,7 @@ The host sends single characters:
 | Cmd | Effect |
 |-----|--------|
 | `w` / `b` / `x` | scan WiFi / Bluetooth / both (5 s WiFi, then 5 s BLE) |
+| `f` / `n` | fast (1 s) / normal (5 s) Bluetooth scans |
 | `s` | stop scanning |
 | `j` / `t` | JSON-lines output / human-readable tables (default after boot) |
 | `?` | print a status (`hello`) line |
@@ -257,7 +262,7 @@ rate. That's expected.
 In JSON mode, every line is one object with an `ev` field:
 
 ```json
-{"ev":"hello","fw":"esp32-ai","ver":2,"mode":"both","mac":"04:B2:47:06:0A:C0"}
+{"ev":"hello","fw":"esp32-ai","ver":6,"mode":"both","ble_s":5,"mac":"04:B2:47:06:0A:C0"}
 {"ev":"scan_start","kind":"wifi","scan":1}
 {"ev":"wifi","scan":1,"bssid":"8C:30:66:DE:51:20","rssi":-54,"ch":6,"sec":"WPA2/3","ssid":"SkinnyRD"}
 {"ev":"ble","scan":1,"addr":"90:70:69:10:be:e1","at":0,"rssi":-67,"adv":"02010611079eca…0f094c6f526120466f7848756e746572"}
