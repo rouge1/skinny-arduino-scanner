@@ -51,8 +51,8 @@ Console, with live counts; Ctrl+1–4) and, below them, the board's controls
 - Devices persist across scans. Rows missing from the latest scan fade.
   "Latest scan only" hides them.
 - The search box (Ctrl+F) matches any column. Every column is sortable.
-- Switch between **WiFi / Bluetooth / Both / Fast** and **Pause scanning**
-  (Space) while connected. **Fast** is Bluetooth only with 1 s scans, so it
+- Switch between **WiFi / Bluetooth / Both / Fast BLE** and **Pause scanning**
+  (Space) while connected. **Fast BLE** is Bluetooth only with 1 s scans, so it
   updates about every 1.3 s instead of every 5–8 s. Use it to track down one
   device: type its name or address in the search box, click its row, and
   watch the signal history as you walk (it catches slightly fewer devices per

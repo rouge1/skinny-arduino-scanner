@@ -104,21 +104,21 @@ class NavButton(QAbstractButton):
         super().leaveEvent(e)
 
 
-class Segmented(QWidget):
-    """Joined, exclusive toggle buttons. Emits the chosen key."""
+class Segmented(QFrame):
+    """Exclusive options stacked in one outlined box; the chosen one is raised
+    with an accent edge. Emits the chosen key."""
 
     chosen = Signal(str)
 
     def __init__(self, options, current):
-        super().__init__()
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
+        super().__init__(objectName="segments")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(1, 1, 1, 1)
         lay.setSpacing(0)
         self.group = QButtonGroup(self, exclusive=True)
-        for i, (key, text, tip) in enumerate(options):
-            b = QToolButton(text=text, checkable=True, checked=(key == current), toolTip=tip)
-            b.setProperty("segment", "first" if i == 0 else
-                          "last" if i == len(options) - 1 else "mid")
+        for key, text, tip in options:
+            b = QPushButton(text, checkable=True, checked=(key == current), toolTip=tip)
+            b.setProperty("segment", True)
             b.setProperty("key", key)
             b.setCursor(Qt.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -295,7 +295,9 @@ class MainWindow(QMainWindow):
             a = QAction(self, shortcut=f"Ctrl+{i + 1}")
             a.triggered.connect(lambda _=False, b=b: b.click())
             self.addAction(a)
-        self.nav_buttons[0].setChecked(True)
+        start = 1 if mode == "fast" else 0  # Fast BLE opens on the Bluetooth list
+        self.nav_buttons[start].setChecked(True)
+        self.pages.setCurrentIndex(start)
         self.nav.idClicked.connect(self.show_page)
 
         central = QWidget()
@@ -373,8 +375,8 @@ class MainWindow(QMainWindow):
         self.mode_seg = Segmented(
             [("wifi", "WiFi", "Scan WiFi"), ("bt", "Bluetooth", "Scan Bluetooth"),
              ("both", "Both", "Scan WiFi + Bluetooth"),
-             ("fast", "Fast", "Bluetooth only, 1 s scans: quick updates for tracking "
-                              "down one device")], self.mode)
+             ("fast", "Fast BLE", "Bluetooth only, 1 s scans: quick updates for tracking "
+                                  "down one device")], self.mode)
         self.mode_seg.chosen.connect(self.change_mode)
         board.addWidget(self.mode_seg)
         self.pause_btn = button("Pause scanning", tip="Pause or resume scanning (Space)")
@@ -538,6 +540,8 @@ class MainWindow(QMainWindow):
         self.mode = mode
         if self.worker and not self.paused:
             self.worker.set_mode(self.mode)
+        if mode == "fast":  # Fast BLE is for hunting a device: show the Bluetooth list
+            self.nav_buttons[1].click()
 
     def toggle_pause(self, paused):
         self.paused = paused

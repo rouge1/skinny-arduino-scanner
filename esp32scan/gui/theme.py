@@ -147,11 +147,14 @@ QPushButton[primary="true"]:disabled {{ background: {RAISED}; color: {FAINT};
 QPushButton[flat="true"], QToolButton[flat="true"] {{ border-color: transparent; color: {MUTED}; }}
 QPushButton[flat="true"]:hover, QToolButton[flat="true"]:hover {{ color: {INK}; }}
 
-/* segmented control: checkable buttons in a row */
-QToolButton[segment] {{ border-radius: 0; padding: 4px 6px; color: {MUTED}; border-color: {LINE}; }}
-QToolButton[segment="first"] {{ border-top-left-radius: 4px; border-bottom-left-radius: 4px; }}
-QToolButton[segment="last"] {{ border-top-right-radius: 4px; border-bottom-right-radius: 4px; }}
-QToolButton[segment]:checked {{ background: {RAISED}; color: {INK}; border-color: {ACCENT}; }}
+/* stacked options (scan mode): one outlined box, chosen row raised + accent edge */
+#segments {{ border: 1px solid {LINE}; border-radius: 4px; }}
+QPushButton[segment="true"] {{ border: none; border-left: 3px solid transparent; border-radius: 0;
+    padding: 6px 10px; text-align: left; color: {MUTED}; background: transparent; }}
+QPushButton[segment="true"]:hover {{ color: {INK}; background: {GROUND}; }}
+QPushButton[segment="true"]:checked {{ color: {INK}; background: {RAISED};
+    border-left-color: {ACCENT}; }}
+QPushButton[segment="true"]:focus {{ color: {ACCENT}; }}
 
 /* filter chips */
 QToolButton[chip="true"] {{ border-radius: 12px; padding: 3px 12px; color: {MUTED}; }}
